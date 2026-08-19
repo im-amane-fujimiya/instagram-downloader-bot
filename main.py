@@ -15,25 +15,119 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 app = Flask(__name__)
 
 
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
+    data = {
+        "chat_id": chat_id,
+        "text": text
+    }
+
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+
     requests.post(
         f"{TELEGRAM_API}/sendMessage",
-        data={
-            "chat_id": chat_id,
-            "text": text
+        json=data,
+        timeout=30
+    )
+
+
+def answer_callback(callback_id):
+    requests.post(
+        f"{TELEGRAM_API}/answerCallbackQuery",
+        json={
+            "callback_query_id": callback_id
         },
         timeout=30
+    )
+
+
+def send_menu(chat_id):
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🎬 Reels",
+                    "callback_data": "reels"
+                },
+                {
+                    "text": "🎥 Videos",
+                    "callback_data": "videos"
+                }
+            ],
+            [
+                {
+                    "text": "🖼️ Photos",
+                    "callback_data": "photos"
+                },
+                {
+                    "text": "📚 Carousel",
+                    "callback_data": "carousel"
+                }
+            ],
+            [
+                {
+                    "text": "❓ Help",
+                    "callback_data": "help"
+                }
+            ]
+        ]
+    }
+
+    send_message(
+        chat_id,
+        "📥 Instagram Downloader\n\n"
+        "Send any public Instagram link and "
+        "I'll download the available media for you. 🚀",
+        keyboard
+    )
+
+
+def send_help(chat_id):
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📥 Download",
+                    "callback_data": "menu"
+                }
+            ]
+        ]
+    }
+
+    send_message(
+        chat_id,
+        "❓ How to use\n\n"
+        "1️⃣ Copy a public Instagram link.\n"
+        "2️⃣ Send it to this bot.\n"
+        "3️⃣ Wait for the download. 🚀\n\n"
+        "✅ Reels\n"
+        "✅ Videos\n"
+        "✅ Photos\n"
+        "✅ Carousels\n\n"
+        "🔒 Private or login-protected content "
+        "isn't supported.",
+        keyboard
     )
 
 
 def send_media(chat_id, filepath):
     extension = os.path.splitext(filepath)[1].lower()
 
-    if extension in [".jpg", ".jpeg", ".png", ".webp"]:
+    if extension in [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+    ]:
         method = "sendPhoto"
         field = "photo"
 
-    elif extension in [".mp4", ".mov", ".mkv", ".webm"]:
+    elif extension in [
+        ".mp4",
+        ".mov",
+        ".mkv",
+        ".webm"
+    ]:
         method = "sendVideo"
         field = "video"
 
@@ -58,7 +152,7 @@ def send_media(chat_id, filepath):
 
 def download_with_ytdlp(url):
     """
-    Existing working Reel/Video downloader.
+    Existing Reel/Video downloader.
     """
 
     temp_dir = tempfile.mkdtemp()
@@ -135,9 +229,45 @@ def download_with_ytdlp(url):
 
 
 def is_instagram_url(url):
-    return (
-        "instagram.com/" in url.lower()
-    )
+    return "instagram.com/" in url.lower()
+
+
+def handle_button(chat_id, callback_id, action):
+    answer_callback(callback_id)
+
+    if action == "menu":
+        send_menu(chat_id)
+
+    elif action == "help":
+        send_help(chat_id)
+
+    elif action == "reels":
+        send_message(
+            chat_id,
+            "🎬 Reels\n\n"
+            "Send a public Instagram Reel link."
+        )
+
+    elif action == "videos":
+        send_message(
+            chat_id,
+            "🎥 Videos\n\n"
+            "Send a public Instagram video post link."
+        )
+
+    elif action == "photos":
+        send_message(
+            chat_id,
+            "🖼️ Photos\n\n"
+            "Send a public Instagram photo post link."
+        )
+
+    elif action == "carousel":
+        send_message(
+            chat_id,
+            "📚 Carousel\n\n"
+            "Send a public Instagram carousel link."
+        )
 
 
 @app.get("/")
@@ -152,12 +282,52 @@ def webhook():
         silent=True
     ) or {}
 
+    # -------------------------------
+    # INLINE BUTTON
+    # -------------------------------
+
+    callback = data.get("callback_query")
+
+    if callback:
+
+        callback_id = callback.get("id")
+
+        callback_data = callback.get(
+            "data",
+            ""
+        )
+
+        message = callback.get(
+            "message"
+        )
+
+        if message:
+
+            chat = message.get(
+                "chat"
+            )
+
+            if chat:
+
+                handle_button(
+                    chat["id"],
+                    callback_id,
+                    callback_data
+                )
+
+        return "OK"
+
+    # -------------------------------
+    # NORMAL MESSAGE
+    # -------------------------------
+
     message = data.get("message")
 
     if not message:
         return "OK"
 
     chat = message.get("chat")
+
     text = message.get(
         "text",
         ""
@@ -168,25 +338,24 @@ def webhook():
 
     chat_id = chat["id"]
 
-    # START
+    # /start
     if text == "/start":
-
-        send_message(
-            chat_id,
-            "👋 Instagram Downloader Bot\n\n"
-            "Send a public Instagram Reel, Video, "
-            "Photo or Carousel link. 🚀"
-        )
-
+        send_menu(chat_id)
         return "OK"
 
-    # URL CHECK
+    # /help
+    if text == "/help":
+        send_help(chat_id)
+        return "OK"
+
+    # Instagram URL
     if not is_instagram_url(text):
 
         send_message(
             chat_id,
             "❌ Please send a valid public "
-            "Instagram URL."
+            "Instagram URL.\n\n"
+            "Use /help for instructions."
         )
 
         return "OK"
@@ -202,10 +371,9 @@ def webhook():
 
     try:
 
-        # ------------------------------------------------
-        # FIRST: Try the existing yt-dlp downloader.
-        # This keeps your working Reel functionality.
-        # ------------------------------------------------
+        # --------------------------------
+        # FIRST: yt-dlp
+        # --------------------------------
 
         try:
 
@@ -225,24 +393,23 @@ def webhook():
                 repr(ytdlp_error)
             )
 
-            # --------------------------------------------
-            # FALLBACK:
-            # Use parth-dl for photos/carousels/posts.
-            # --------------------------------------------
+            # ----------------------------
+            # FALLBACK: parth-dl
+            # ----------------------------
 
             send_message(
                 chat_id,
-                "🔄 Trying alternate Instagram "
-                "media extractor..."
+                "🔄 Trying alternate "
+                "Instagram media extractor..."
             )
 
             extractor_dir, files = (
                 extract_instagram_media(text)
             )
 
-        # ------------------------------------------------
-        # SEND MEDIA
-        # ------------------------------------------------
+        # --------------------------------
+        # SEND FILES
+        # --------------------------------
 
         sent = 0
 
