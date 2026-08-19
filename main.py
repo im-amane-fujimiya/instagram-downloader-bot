@@ -53,18 +53,21 @@ def download_instagram(url):
     temp_dir = tempfile.mkdtemp()
 
     output = os.path.join(
-    temp_dir,
-    "%(playlist_index)s_%(id)s.%(ext)s"
+        temp_dir,
+        "%(playlist_index)s_%(id)s.%(ext)s"
     )
 
     command = [
         "yt-dlp",
         "--no-warnings",
         "--restrict-filenames",
+        "--no-playlist",
         "-o",
         output,
         url
     ]
+
+    print("RUNNING:", " ".join(command))
 
     result = subprocess.run(
         command,
@@ -73,9 +76,14 @@ def download_instagram(url):
         timeout=180
     )
 
+    print("YTDLP RETURN CODE:", result.returncode)
+    print("YTDLP STDOUT:", result.stdout[-2000:])
+    print("YTDLP STDERR:", result.stderr[-2000:])
+
     if result.returncode != 0:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise Exception(result.stderr[-1000:])
+        raise Exception(
+            result.stderr[-1000:]
+        )
 
     files = []
 
@@ -86,8 +94,9 @@ def download_instagram(url):
             files.append(path)
 
     if not files:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise Exception("No media downloaded.")
+        raise Exception(
+            "yt-dlp finished but no media file was created."
+        )
 
     return temp_dir, files
 
@@ -118,7 +127,8 @@ def webhook():
         send_message(
             chat_id,
             "👋 Instagram Downloader Bot\n\n"
-            "Send a public Instagram Reel, Video, Photo or Carousel link. 🚀"
+            "Send a public Instagram Reel, Video, "
+            "Photo or Carousel link. 🚀"
         )
         return "OK"
 
@@ -139,9 +149,11 @@ def webhook():
     try:
         temp_dir, files = download_instagram(text)
 
-        # Send each media file separately
         for filepath in files:
-            send_media(chat_id, filepath)
+            send_media(
+                chat_id,
+                filepath
+            )
 
         send_message(
             chat_id,
@@ -151,17 +163,23 @@ def webhook():
     except subprocess.TimeoutExpired:
         send_message(
             chat_id,
-            "⏱️ Download took too long. Try a smaller public post."
+            "⏱️ Download timed out.\n"
+            "Try a smaller public Instagram post."
         )
 
     except Exception as error:
-        print("DOWNLOAD ERROR:", error)
+        error_text = str(error)
+
+        print(
+            "DOWNLOAD ERROR:",
+            repr(error_text)
+        )
 
         send_message(
             chat_id,
             "❌ Download failed.\n\n"
-            "Make sure the Instagram post is public "
-            "and the URL is valid."
+            "Error:\n"
+            + error_text[-1000:]
         )
 
     finally:
