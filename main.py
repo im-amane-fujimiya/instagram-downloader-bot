@@ -118,7 +118,6 @@ def bottom_keyboard():
             ]
         ],
         "resize_keyboard": True,
-        "is_persistent": True,
         "input_field_placeholder": "Send an Instagram link..."
     }
 
