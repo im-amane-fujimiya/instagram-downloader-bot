@@ -1,14 +1,18 @@
 import os
-import asyncio
-from flask import Flask, request
+
+from fastapi import FastAPI, Request
 from telegram import Update
-from telegram.ext import Application, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 TOKEN = os.environ["BOT_TOKEN"]
 
-app = Flask(__name__)
-
-bot_app = (
+telegram_app = (
     Application.builder()
     .token(TOKEN)
     .updater(None)
@@ -16,7 +20,18 @@ bot_app = (
 )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Hello!\n\n"
+        "Instagram Downloader Bot is online! 🚀\n\n"
+        "Instagram ka public Reel/Post link bhejo."
+    )
+
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     if not update.message or not update.message.text:
         return
 
@@ -24,56 +39,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text.startswith("http"):
         await update.message.reply_text(
-            "🔎 Link received!\n\n"
-            "Instagram downloader processing will be added next."
+            "🔗 Link received!\n\n"
+            "Downloader engine abhi setup ho raha hai. 🚀"
         )
     else:
         await update.message.reply_text(
-            "📸 Instagram link bhejo."
+            "📸 Instagram ka public link bhejo."
         )
 
 
-bot_app.add_handler(
-    MessageHandler(filters.TEXT, handle_message)
+telegram_app.add_handler(CommandHandler("start", start))
+
+telegram_app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_message
+    )
 )
 
 
+app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup():
+    await telegram_app.initialize()
+    await telegram_app.start()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+
+
 @app.get("/")
-def home():
+async def home():
     return "Instagram Downloader Bot is running!"
 
 
 @app.post("/webhook")
-async def webhook():
-    data = request.get_json(force=True)
+async def webhook(request: Request):
+    data = await request.json()
 
     update = Update.de_json(
         data,
-        bot_app.bot
+        telegram_app.bot
     )
 
-    await bot_app.process_update(update)
+    await telegram_app.process_update(update)
 
-    return "OK"
-
-
-async def start_bot():
-    await bot_app.initialize()
-    await bot_app.start()
-
-
-if __name__ == "__main__":
-    import hypercorn.asyncio
-    from hypercorn.config import Config
-
-    async def run():
-        await start_bot()
-
-        config = Config()
-        config.bind = [
-            f"0.0.0.0:{os.environ.get('PORT', '10000')}"
-        ]
-
-        await hypercorn.asyncio.serve(app, config)
-
-    asyncio.run(run())
+    return {"ok": True}
