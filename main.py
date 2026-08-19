@@ -1,8 +1,8 @@
 import os
-import json
 import subprocess
 import tempfile
 import shutil
+import json
 
 import requests
 from flask import Flask, request
@@ -15,6 +15,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 app = Flask(__name__)
 
+
 # =========================================================
 # BANNER
 # =========================================================
@@ -26,7 +27,7 @@ BANNER_PATH = os.path.join(
 
 
 # =========================================================
-# TELEGRAM COMMANDS
+# TELEGRAM COMMANDS + MENU
 # =========================================================
 
 def setup_bot_commands():
@@ -65,7 +66,6 @@ def setup_bot_commands():
             response.text
         )
 
-        # Telegram Menu button
         response = requests.post(
             f"{TELEGRAM_API}/setChatMenuButton",
             json={
@@ -91,35 +91,6 @@ def setup_bot_commands():
 
 
 setup_bot_commands()
-
-
-# =========================================================
-# BOTTOM KEYBOARD
-# =========================================================
-
-def bottom_keyboard():
-
-    return {
-        "keyboard": [
-            [
-                "📥 Download",
-                "❓ Help"
-            ],
-            [
-                "🎬 Reels",
-                "🎥 Videos"
-            ],
-            [
-                "🖼️ Photos",
-                "📚 Carousel"
-            ],
-            [
-                "ℹ️ About"
-            ]
-        ],
-        "resize_keyboard": True,
-        "input_field_placeholder": "Send an Instagram link..."
-    }
 
 
 # =========================================================
@@ -178,27 +149,24 @@ def answer_callback(callback_id):
 
 
 # =========================================================
-# START SCREEN
+# START
 # =========================================================
 
 def send_start(chat_id):
 
-    keyboard = bottom_keyboard()
-
     caption = (
         "👋 *Welcome to Instagram All-in-One!*\n\n"
 
-        "🚀 Your simple little sidekick for "
+        "🚀 Your simple sidekick for "
         "*Reels, Videos, Photos & Carousels.*\n\n"
 
         "😂 Instagram: “Save this post.”\n"
         "😎 Me: “Why save it when I can download it?”\n\n"
 
-        "📥 Just send me a public Instagram link "
-        "and let me do the boring part.\n\n"
+        "📥 Send me a public Instagram link "
+        "and I'll handle the boring part.\n\n"
 
-        "👇 Pick an option below or simply "
-        "send your link."
+        "👇 Or use the buttons below."
     )
 
     try:
@@ -215,10 +183,7 @@ def send_start(chat_id):
                     data={
                         "chat_id": chat_id,
                         "caption": caption,
-                        "parse_mode": "Markdown",
-                        "reply_markup": json.dumps(
-                            keyboard
-                        )
+                        "parse_mode": "Markdown"
                     },
                     files={
                         "photo": banner
@@ -238,7 +203,7 @@ def send_start(chat_id):
             send_message(
                 chat_id,
                 caption,
-                keyboard,
+                None,
                 "Markdown"
             )
 
@@ -249,14 +214,10 @@ def send_start(chat_id):
             repr(error)
         )
 
-        # Fallback:
-        # Even if banner fails, bot still sends
-        # the welcome message + keyboard.
-
         send_message(
             chat_id,
             caption,
-            keyboard,
+            None,
             "Markdown"
         )
 
@@ -303,7 +264,7 @@ def send_menu(chat_id):
         "📥 *Instagram Downloader*\n\n"
         "Send any public Instagram link and "
         "I'll handle the rest. 🚀\n\n"
-        "Choose a category below:",
+        "Choose an option below:",
         keyboard,
         "Markdown"
     )
@@ -315,13 +276,24 @@ def send_menu(chat_id):
 
 def send_help(chat_id):
 
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📥 Download",
+                    "callback_data": "menu"
+                }
+            ]
+        ]
+    }
+
     send_message(
         chat_id,
 
         "❓ *How to use Instagram All-in-One*\n\n"
 
         "1️⃣ Copy a public Instagram link.\n"
-        "2️⃣ Send it to me.\n"
+        "2️⃣ Send it to the bot.\n"
         "3️⃣ Wait while I fetch the media. 🚀\n\n"
 
         "✅ Reels\n"
@@ -332,10 +304,10 @@ def send_help(chat_id):
         "🔒 Private or login-protected content "
         "isn't supported.\n\n"
 
-        "💡 *Tip:* You can use the buttons below "
-        "or simply paste a link.",
+        "💡 You can also type / to see "
+        "available commands.",
 
-        bottom_keyboard(),
+        keyboard,
         "Markdown"
     )
 
@@ -346,10 +318,25 @@ def send_help(chat_id):
 
 def send_about(chat_id):
 
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📥 Download",
+                    "callback_data": "menu"
+                },
+                {
+                    "text": "❓ Help",
+                    "callback_data": "help"
+                }
+            ]
+        ]
+    }
+
     send_message(
         chat_id,
 
-        "ℹ️ *About Instagram All-in-One*\n\n"
+        "ℹ️ *Instagram All-in-One*\n\n"
 
         "A simple Telegram downloader for "
         "public Instagram media. 🚀\n\n"
@@ -366,7 +353,7 @@ def send_about(chat_id):
         "Built to make saving public Instagram "
         "media a little less annoying. 😎",
 
-        bottom_keyboard(),
+        keyboard,
         "Markdown"
     )
 
@@ -493,6 +480,7 @@ def download_with_ytdlp(url):
         )
 
         if os.path.isfile(path):
+
             files.append(path)
 
     if not files:
@@ -552,7 +540,7 @@ def handle_button(
             chat_id,
             "🎬 *Reels mode ready!*\n\n"
             "Send a public Instagram Reel link. 🚀",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -562,7 +550,7 @@ def handle_button(
             chat_id,
             "🎥 *Video mode ready!*\n\n"
             "Send a public Instagram video post link. 🚀",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -570,9 +558,9 @@ def handle_button(
 
         send_message(
             chat_id,
-            "🖼️ *Photo mode ready!*\n\n"
+            "🖼️ *Photos mode ready!*\n\n"
             "Send a public Instagram photo post link. 🚀",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -582,7 +570,7 @@ def handle_button(
             chat_id,
             "📚 *Carousel mode ready!*\n\n"
             "Send a public Instagram carousel link. 🚀",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -612,7 +600,7 @@ def webhook():
     ) or {}
 
     # =====================================================
-    # CALLBACK / INLINE BUTTON
+    # INLINE BUTTON
     # =====================================================
 
     callback = data.get(
@@ -724,88 +712,8 @@ def webhook():
             "📥 *Ready!*\n\n"
             "Send your public Instagram "
             "Reel, Video, Photo or Carousel link. 🚀",
-            bottom_keyboard(),
+            None,
             "Markdown"
-        )
-
-        return "OK"
-
-    # =====================================================
-    # BOTTOM KEYBOARD
-    # =====================================================
-
-    if text == "📥 Download":
-
-        send_message(
-            chat_id,
-            "📥 *Send the Instagram link!* 🔗\n\n"
-            "I'll take care of the boring part. 😎",
-            bottom_keyboard(),
-            "Markdown"
-        )
-
-        return "OK"
-
-    if text == "❓ Help":
-
-        send_help(
-            chat_id
-        )
-
-        return "OK"
-
-    if text == "🎬 Reels":
-
-        send_message(
-            chat_id,
-            "🎬 *Reels mode ready!*\n\n"
-            "Send a public Instagram Reel link. 🚀",
-            bottom_keyboard(),
-            "Markdown"
-        )
-
-        return "OK"
-
-    if text == "🎥 Videos":
-
-        send_message(
-            chat_id,
-            "🎥 *Videos mode ready!*\n\n"
-            "Send a public Instagram video post link. 🚀",
-            bottom_keyboard(),
-            "Markdown"
-        )
-
-        return "OK"
-
-    if text == "🖼️ Photos":
-
-        send_message(
-            chat_id,
-            "🖼️ *Photos mode ready!*\n\n"
-            "Send a public Instagram photo post link. 🚀",
-            bottom_keyboard(),
-            "Markdown"
-        )
-
-        return "OK"
-
-    if text == "📚 Carousel":
-
-        send_message(
-            chat_id,
-            "📚 *Carousel mode ready!*\n\n"
-            "Send a public Instagram carousel link. 🚀",
-            bottom_keyboard(),
-            "Markdown"
-        )
-
-        return "OK"
-
-    if text == "ℹ️ About":
-
-        send_about(
-            chat_id
         )
 
         return "OK"
@@ -820,8 +728,7 @@ def webhook():
             chat_id,
             "🤔 Hmm... mujhe ye samajh nahi aaya.\n\n"
             "🔗 Instagram link bhejo, "
-            "ya neeche se koi option choose karo. 😎",
-            bottom_keyboard()
+            "ya /help use karo. 😎"
         )
 
         return "OK"
@@ -831,13 +738,13 @@ def webhook():
     # =====================================================
 
     send_message(
-    chat_id,
-    "🔗 *Link received!*\n\n"
-    "🔍 Checking the post...\n"
-    "⚙️ Preparing your media...\n\n"
-    "⏳ Hang tight, I'm on it 😎",
-    bottom_keyboard(),
-    "Markdown"
+        chat_id,
+        "🔗 *Link received!*\n\n"
+        "🔍 Checking the post...\n"
+        "⚙️ Preparing your media...\n\n"
+        "⏳ Hang tight, I'm on it 😎",
+        None,
+        "Markdown"
     )
 
     ytdlp_dir = None
@@ -874,7 +781,7 @@ def webhook():
             )
 
             # =============================================
-            # FALLBACK: EXTRACTOR.PY
+            # FALLBACK
             # =============================================
 
             extractor_dir, files = (
@@ -918,12 +825,16 @@ def webhook():
                 "No media could be sent to Telegram."
             )
 
+        # =================================================
+        # SUCCESS
+        # =================================================
+
         send_message(
             chat_id,
             f"🎉 *Done!*\n\n"
             f"📦 {sent} media file(s) delivered.\n"
             f"❤️ Enjoy!",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -933,7 +844,7 @@ def webhook():
             chat_id,
             "⏱️ *Download timed out.*\n\n"
             "Try a smaller public Instagram post. 😅",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -951,7 +862,7 @@ def webhook():
             "😬 *Instagram ne thoda nakhra "
             "dikha diya.*\n\n"
             "🔄 Please try again in a moment.",
-            bottom_keyboard(),
+            None,
             "Markdown"
         )
 
@@ -970,4 +881,4 @@ def webhook():
                 extractor_dir
             )
 
-    return "ok"
+    return "OK"
