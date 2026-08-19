@@ -1,16 +1,24 @@
-import os
 import tempfile
 from pathlib import Path
 
-from parth_dl import download
+from parth_dl import (
+    download,
+    DownloadError,
+    RateLimitError,
+    NetworkError,
+    ValidationError,
+)
 
 
 def extract_instagram_media(url):
     """
-    Download public Instagram media using parth-dl.
+    Download public Instagram media.
 
-    Returns:
-        list[str]: downloaded file paths
+    Supports:
+    - Reels
+    - Video posts
+    - Single photos
+    - Carousels
     """
 
     temp_dir = Path(
@@ -22,36 +30,75 @@ def extract_instagram_media(url):
     try:
         result = download(
             url,
-            output_dir=str(temp_dir)
+            output_path=str(temp_dir),
+            quality="best",
         )
 
-        files = []
+        # Single media returns a string.
+        if isinstance(result, str):
+            files = [result]
 
-        for path in temp_dir.rglob("*"):
-            if path.is_file():
-                files.append(str(path))
+        # Carousel returns a list.
+        elif isinstance(result, list):
+            files = result
+
+        else:
+            files = []
+
+        # Fallback: look inside temp directory.
+        if not files:
+            files = [
+                str(path)
+                for path in temp_dir.rglob("*")
+                if path.is_file()
+            ]
 
         if not files:
-            raise RuntimeError(
-                "Instagram media was not found."
+            raise DownloadError(
+                "No media files were downloaded."
             )
 
-        return temp_dir, files
+        return str(temp_dir), files
+
+    except RateLimitError:
+        cleanup_media(temp_dir)
+        raise RuntimeError(
+            "Instagram is temporarily rate-limiting requests. "
+            "Please try again later."
+        )
+
+    except ValidationError:
+        cleanup_media(temp_dir)
+        raise RuntimeError(
+            "Invalid or unsupported Instagram URL."
+        )
+
+    except NetworkError as error:
+        cleanup_media(temp_dir)
+        raise RuntimeError(
+            f"Instagram network error: {error}"
+        )
+
+    except DownloadError as error:
+        cleanup_media(temp_dir)
+        raise RuntimeError(
+            f"Instagram download failed: {error}"
+        )
 
     except Exception:
-        # Keep the directory for the caller to clean up
+        cleanup_media(temp_dir)
         raise
 
 
 def cleanup_media(temp_dir):
     """
-    Delete temporary downloaded media.
+    Delete temporary downloaded files.
     """
 
-    if temp_dir and os.path.exists(temp_dir):
-        import shutil
+    import shutil
 
+    if temp_dir:
         shutil.rmtree(
-            temp_dir,
+            str(temp_dir),
             ignore_errors=True
         )
