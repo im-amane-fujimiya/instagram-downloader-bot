@@ -2,7 +2,6 @@ import os
 import subprocess
 import tempfile
 import shutil
-import json
 
 import requests
 from flask import Flask, request
@@ -123,6 +122,43 @@ def send_message(
 
     response.raise_for_status()
 
+    return response.json()["result"]["message_id"]
+
+
+# =========================================================
+# DELETE MESSAGE
+# =========================================================
+
+def delete_message(
+    chat_id,
+    message_id
+):
+
+    try:
+
+        response = requests.post(
+            f"{TELEGRAM_API}/deleteMessage",
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id
+            },
+            timeout=30
+        )
+
+        if not response.ok:
+
+            print(
+                "DELETE MESSAGE ERROR:",
+                response.text
+            )
+
+    except Exception as error:
+
+        print(
+            "DELETE MESSAGE ERROR:",
+            repr(error)
+        )
+
 
 # =========================================================
 # ANSWER CALLBACK
@@ -178,12 +214,49 @@ def send_start(chat_id):
                 "rb"
             ) as banner:
 
+                keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "🎬 Reels",
+                                "callback_data": "reels"
+                            },
+                            {
+                                "text": "🎥 Videos",
+                                "callback_data": "videos"
+                            }
+                        ],
+                        [
+                            {
+                                "text": "🖼️ Photos",
+                                "callback_data": "photos"
+                            },
+                            {
+                                "text": "📚 Carousel",
+                                "callback_data": "carousel"
+                            }
+                        ],
+                        [
+                            {
+                                "text": "❓ Help",
+                                "callback_data": "help"
+                            }
+                        ]
+                    ]
+                }
+
                 response = requests.post(
                     f"{TELEGRAM_API}/sendPhoto",
                     data={
                         "chat_id": chat_id,
                         "caption": caption,
-                        "parse_mode": "Markdown"
+                        "parse_mode": "Markdown",
+                        "reply_markup": str(
+                            keyboard
+                        ).replace(
+                            "'",
+                            '"'
+                        )
                     },
                     files={
                         "photo": banner
@@ -214,15 +287,12 @@ def send_start(chat_id):
             repr(error)
         )
 
-        send_message(
-            chat_id,
-            caption,
-            None,
-            "Markdown"
+        send_menu(
+            chat_id
         )
 
 
-# =========================================================
+## =========================================================
 # INLINE MENU
 # =========================================================
 
@@ -304,8 +374,7 @@ def send_help(chat_id):
         "🔒 Private or login-protected content "
         "isn't supported.\n\n"
 
-        "💡 You can also type / to see "
-        "available commands.",
+        "💡 Type / to see available commands.",
 
         keyboard,
         "Markdown"
@@ -737,7 +806,7 @@ def webhook():
     # DOWNLOAD START
     # =====================================================
 
-    send_message(
+    loading_message_id = send_message(
         chat_id,
         "🔗 *Link received!*\n\n"
         "🔍 Checking the post...\n"
@@ -789,10 +858,19 @@ def webhook():
             )
 
         # =================================================
-        # SEND FILES
+        # DELETE LOADING MESSAGE
         # =================================================
 
-        send_message(
+        delete_message(
+            chat_id,
+            loading_message_id
+        )
+
+        # =================================================
+        # SENDING MESSAGE
+        # =================================================
+
+        sending_message_id = send_message(
             chat_id,
             "📤 *Sending your media...*",
             None,
@@ -819,6 +897,15 @@ def webhook():
                     repr(send_error)
                 )
 
+        # =================================================
+        # DELETE SENDING MESSAGE
+        # =================================================
+
+        delete_message(
+            chat_id,
+            sending_message_id
+        )
+
         if sent == 0:
 
             raise Exception(
@@ -840,6 +927,11 @@ def webhook():
 
     except subprocess.TimeoutExpired:
 
+        delete_message(
+            chat_id,
+            loading_message_id
+        )
+
         send_message(
             chat_id,
             "⏱️ *Download timed out.*\n\n"
@@ -855,6 +947,11 @@ def webhook():
         print(
             "DOWNLOAD ERROR:",
             repr(error_text)
+        )
+
+        delete_message(
+            chat_id,
+            loading_message_id
         )
 
         send_message(
