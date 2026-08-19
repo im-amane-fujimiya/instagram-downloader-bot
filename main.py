@@ -53,8 +53,8 @@ def download_instagram(url):
     temp_dir = tempfile.mkdtemp()
 
     output = os.path.join(
-        temp_dir,
-        "%(playlist_index&{}|)s%(id)s.%(ext)s"
+    temp_dir,
+    "%(playlist_index)s_%(id)s.%(ext)s"
     )
 
     command = [
