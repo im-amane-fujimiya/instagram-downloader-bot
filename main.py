@@ -832,13 +832,13 @@ def webhook():
     # =====================================================
 
     send_message(
-        chat_id,
-        "🔍 *Link detected!*\n\n"
-        "📡 Fetching media...\n"
-        "⚙️ Processing...\n"
-        "⏳ Please wait...",
-        bottom_keyboard(),
-        "Markdown"
+    chat_id,
+    "🔗 *Link received!*\n\n"
+    "🔍 Checking the post...\n"
+    "⚙️ Preparing your media...\n\n"
+    "⏳ Hang tight, I'm on it 😎",
+    bottom_keyboard(),
+    "Markdown"
     )
 
     ytdlp_dir = None
