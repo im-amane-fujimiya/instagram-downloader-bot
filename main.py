@@ -17,7 +17,7 @@ from cleanup import schedule_delete
 # CONFIG
 # =========================================================
 
-TOKEN = os.environ["BOT_TOKEN"]
+TOKEN = os.environ.get("BOT_TOKEN", "")
 
 TELEGRAM_API = (
     f"https://api.telegram.org/bot{TOKEN}"
@@ -845,6 +845,7 @@ def home():
 # WEBHOOK
 # =========================================================
 
+@app.post("/")
 @app.post("/webhook")
 def webhook():
 
@@ -921,70 +922,64 @@ def webhook():
 
     chat_id = chat["id"]
 
+    # Extract command name safely (e.g., /stats@bot_name -> /stats)
+    cmd = text.split()[0].lower().split('@')[0] if text else ""
 
     # =====================================================
     # COMMANDS
     # =====================================================
 
-    if text == "/start":
+    if cmd == "/start":
 
         send_start(chat_id)
 
         return "OK"
 
 
-    if text == "/help":
+    if cmd == "/help":
 
         send_help(chat_id)
 
         return "OK"
 
 
-    if text == "/about":
+    if cmd == "/about":
 
         send_about(chat_id)
 
         return "OK"
 
 
-    if text.startswith("/stats"):
+    if cmd == "/stats":
 
-        total, mine = get_stats(
-            chat_id
-        )
+        try:
+            total, mine = get_stats(chat_id)
 
-        if str(chat_id) == str(
-            OWNER_CHAT_ID
-        ):
-
-            send_message(
-                chat_id,
-
-                "📊 *Bot Stats (Owner view)*\n\n"
-                f"🌍 Total downloads (all users): "
-                f"{total}\n"
-                f"👤 Your downloads: {mine}",
-
-                None,
-                "Markdown"
-            )
-
-        else:
-
-            send_message(
-                chat_id,
-
-                "📊 *Your Stats*\n\n"
-                f"👤 Your downloads: {mine}",
-
-                None,
-                "Markdown"
-            )
+            if str(chat_id) == str(OWNER_CHAT_ID):
+                send_message(
+                    chat_id,
+                    "📊 *Bot Stats (Owner view)*\n\n"
+                    f"🌍 Total downloads (all users): {total}\n"
+                    f"👤 Your downloads: {mine}",
+                    None,
+                    "Markdown"
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "📊 *Your Stats*\n\n"
+                    f"👤 Your downloads: {mine}",
+                    None,
+                    "Markdown"
+                )
+        except Exception as error:
+            print("STATS EXECUTION ERROR:", repr(error))
+            send_message(chat_id, "❌ Stats view karne me error aaya.")
 
         return "OK"
 
 
-    if text == "/download":
+    if cmd == "/download":
 
         send_message(
             chat_id,
@@ -1290,4 +1285,9 @@ def _handle_download(
 
             cleanup_media(
                 extractor_dir
-        )
+            )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
