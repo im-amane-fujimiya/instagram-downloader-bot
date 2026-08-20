@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import shutil
 import threading
+import time
 
 import requests
 from flask import Flask, request
@@ -27,6 +28,33 @@ app = Flask(__name__)
 
 MAX_CONCURRENT_DOWNLOADS = 1
 download_semaphore = threading.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+
+# =========================================================
+# INSTAGRAM COOLDOWN
+# =========================================================
+# Instagram rate-limits (429) IPs that hit it in bursts —
+# shared hosting IPs (Render, etc.) get flagged faster since
+# many bots share the same address range. Forcing a minimum
+# gap between requests to Instagram makes traffic look less
+# bursty and reduces how often we get blocked.
+
+INSTAGRAM_COOLDOWN_SECONDS = 8
+_last_instagram_request_lock = threading.Lock()
+_last_instagram_request_time = 0.0
+
+
+def wait_for_instagram_cooldown():
+    global _last_instagram_request_time
+
+    with _last_instagram_request_lock:
+        now = time.monotonic()
+        elapsed = now - _last_instagram_request_time
+        remaining = INSTAGRAM_COOLDOWN_SECONDS - elapsed
+
+        if remaining > 0:
+            time.sleep(remaining)
+
+        _last_instagram_request_time = time.monotonic()
 
 
 # =========================================================
@@ -575,6 +603,8 @@ def _handle_download(chat_id, text):
     extractor_dir = None
 
     try:
+        wait_for_instagram_cooldown()
+
         try:
             ytdlp_dir, files = download_with_ytdlp(text)
             print("yt-dlp succeeded:", files)
@@ -587,6 +617,8 @@ def _handle_download(chat_id, text):
                 "🔄 Trying alternate "
                 "Instagram media extractor..."
             )
+
+            wait_for_instagram_cooldown()
 
             extractor_dir, files = extract_instagram_media(text)
 
