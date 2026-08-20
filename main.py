@@ -947,7 +947,7 @@ def webhook():
         return "OK"
 
 
-    if text == "/stats":
+    if text.startswith("/stats"):
 
         total, mine = get_stats(
             chat_id
