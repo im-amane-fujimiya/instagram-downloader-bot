@@ -7,7 +7,7 @@ import requests
 from flask import Flask, request
 
 from extractor import extract_instagram_media, cleanup_media
-
+from cleanup import schedule_delete
 
 TOKEN = os.environ["BOT_TOKEN"]
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
@@ -122,7 +122,15 @@ def send_message(
 
     response.raise_for_status()
 
-    return response.json()["result"]["message_id"]
+message_id = response.json()["result"]["message_id"]
+
+schedule_delete(
+    TELEGRAM_API,
+    chat_id,
+    message_id
+)
+
+return message_id
 
 
 # =========================================================
