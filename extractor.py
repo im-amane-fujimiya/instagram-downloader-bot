@@ -1,4 +1,5 @@
 import tempfile
+import shutil
 from pathlib import Path
 
 from parth_dl import (
@@ -94,11 +95,9 @@ def cleanup_media(temp_dir):
     """
     Delete temporary downloaded files.
     """
-
-    import shutil
-
     if temp_dir:
         shutil.rmtree(
             str(temp_dir),
             ignore_errors=True
         )
+        
