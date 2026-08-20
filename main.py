@@ -122,15 +122,15 @@ def send_message(
 
     response.raise_for_status()
 
-message_id = response.json()["result"]["message_id"]
+    message_id = response.json()["result"]["message_id"]
 
-schedule_delete(
-    TELEGRAM_API,
-    chat_id,
-    message_id
-)
+    schedule_delete(
+        TELEGRAM_API,
+        chat_id,
+        message_id
+    )
 
-return message_id
+    return message_id
 
 
 # =========================================================
