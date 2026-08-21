@@ -1,28 +1,75 @@
 import os
 import time
+from datetime import datetime, timezone
 
-START_TIME = time.time()
+
+OWNER_CHAT_ID = str(
+    os.environ.get(
+        "OWNER_CHAT_ID",
+        "-1002562168076"
+    )
+)
 
 
-def get_ping_info(chat_id, total_downloads=0, user_downloads=0):
-    uptime = int(time.time() - START_TIME)
+def handle_ping(chat_id, user):
+    """
+    Owner-only /ping command.
 
-    days = uptime // 86400
-    hours = (uptime % 86400) // 3600
-    minutes = (uptime % 3600) // 60
-    seconds = uptime % 60
+    Returns:
+    - detailed bot information for owner
+    - simple status for everyone else
+    """
 
-    username = os.environ.get("BOT_USERNAME", "Not set")
+    chat_id = str(chat_id)
+
+    if chat_id != OWNER_CHAT_ID:
+        return (
+            "🏓 *Pong!*\n\n"
+            "🤖 Bot is online."
+        )
+
+    first_name = (
+        user.get("first_name")
+        or "Unknown"
+    )
+
+    last_name = (
+        user.get("last_name")
+        or ""
+    )
+
+    username = (
+        user.get("username")
+        or "No username"
+    )
+
+    user_id = user.get(
+        "id",
+        "Unknown"
+    )
+
+    full_name = (
+        f"{first_name} {last_name}"
+    ).strip()
+
+    now = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
     return (
-        "🏓 PONG!\n\n"
-        f"🆔 Your ID: `{chat_id}`\n"
-        f"🤖 Bot: @{username}\n\n"
-        "📊 DOWNLOADS\n"
-        f"🌍 Total: {total_downloads}\n"
-        f"👤 Yours: {user_downloads}\n\n"
-        "⏱️ Uptime\n"
-        f"{days}d {hours}h {minutes}m {seconds}s\n\n"
-        "🟢 Server: Online\n"
-        "🟢 Bot: Running"
+        "🏓 *PONG — BOT ONLINE*\n\n"
+        "🤖 Status: `ONLINE`\n"
+        f"🕐 Server time: `{now}`\n\n"
+        "👤 *User Information*\n"
+        f"• Name: `{full_name}`\n"
+        f"• Username: `@{username}`\n"
+        f"• User ID: `{user_id}`\n"
+        f"• Chat ID: `{chat_id}`\n\n"
+        "⚙️ *Bot Information*\n"
+        f"• Owner ID: `{OWNER_CHAT_ID}`\n"
+        "• Instagram Downloader: `ACTIVE`\n"
+        "• Webhook: `ACTIVE`\n"
+        "• Server: `RENDER`\n"
     )
