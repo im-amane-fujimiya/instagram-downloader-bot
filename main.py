@@ -11,6 +11,7 @@ from flask import Flask, request
 
 from extractor import extract_instagram_media, cleanup_media
 from cleanup import schedule_delete
+from metadata import get_instagram_metadata
 
 
 # =========================================================
@@ -30,7 +31,7 @@ app = Flask(__name__)
 
 
 # =========================================================
-# CONCURRENCY LIMIT
+# CONCURRENCY
 # =========================================================
 
 MAX_CONCURRENT_DOWNLOADS = 1
@@ -76,7 +77,7 @@ def wait_for_instagram_cooldown():
 
 
 # =========================================================
-# DOWNLOAD STATS
+# DOWNLOAD DATA
 # =========================================================
 
 STATS_FILE = os.path.join(
@@ -149,7 +150,7 @@ def record_download(chat_id):
             )
 
 
-def get_stats(chat_id):
+def get_download_stats(chat_id):
 
     with _stats_lock:
 
@@ -160,29 +161,23 @@ def get_stats(chat_id):
             0
         )
 
-        mine = stats.get(
-            "users",
-            {}
-        ).get(
-            str(chat_id),
-            0
-        )
-
-        return total, mine
-
-
-def get_unique_users():
-
-    with _stats_lock:
-
-        stats = _load_stats()
-
         users = stats.get(
             "users",
             {}
         )
 
-        return len(users)
+        mine = users.get(
+            str(chat_id),
+            0
+        )
+
+        unique_users = len(users)
+
+        return (
+            total,
+            mine,
+            unique_users
+        )
 
 
 # =========================================================
@@ -286,15 +281,11 @@ def send_message(
 
     if reply_markup:
 
-        data["reply_markup"] = (
-            reply_markup
-        )
+        data["reply_markup"] = reply_markup
 
     if parse_mode:
 
-        data["parse_mode"] = (
-            parse_mode
-        )
+        data["parse_mode"] = parse_mode
 
     response = requests.post(
         f"{TELEGRAM_API}/sendMessage",
@@ -365,8 +356,7 @@ def answer_callback(callback_id):
         requests.post(
             f"{TELEGRAM_API}/answerCallbackQuery",
             json={
-                "callback_query_id":
-                    callback_id
+                "callback_query_id": callback_id
             },
             timeout=30
         )
@@ -609,6 +599,97 @@ def send_about(chat_id):
         "Built to make saving public Instagram "
         "media a little less annoying. 😎",
         keyboard,
+        "Markdown"
+    )
+
+
+# =========================================================
+# PING
+# =========================================================
+
+def send_ping(chat_id, user):
+
+    if str(chat_id) != str(OWNER_CHAT_ID):
+
+        send_message(
+            chat_id,
+            "❌ *You are not authorized to use /ping.*",
+            None,
+            "Markdown"
+        )
+
+        return
+
+    start_time = time.monotonic()
+
+    total, mine, unique_users = (
+        get_download_stats(chat_id)
+    )
+
+    response_time = round(
+        (time.monotonic() - start_time) * 1000,
+        2
+    )
+
+    first_name = user.get(
+        "first_name",
+        "Unknown"
+    )
+
+    last_name = user.get(
+        "last_name",
+        ""
+    )
+
+    username = user.get(
+        "username"
+    )
+
+    user_id = user.get(
+        "id",
+        chat_id
+    )
+
+    full_name = (
+        f"{first_name} {last_name}"
+        if last_name
+        else first_name
+    )
+
+    username_text = (
+        f"@{username}"
+        if username
+        else "Not set"
+    )
+
+    text = (
+        "🏓 *PONG!*\n\n"
+
+        "🟢 *Bot Status:* Online\n"
+        f"⚡ *Response:* {response_time} ms\n\n"
+
+        "👤 *Owner Information*\n"
+        f"• Name: {full_name}\n"
+        f"• Username: {username_text}\n"
+        f"• User ID: `{user_id}`\n"
+        f"• Chat ID: `{chat_id}`\n\n"
+
+        "📊 *Download Information*\n"
+        f"• Total downloads: {total}\n"
+        f"• Your downloads: {mine}\n"
+        f"• Unique users: {unique_users}\n\n"
+
+        "🤖 *Instagram Downloader*\n"
+        "• Reels: ✅\n"
+        "• Videos: ✅\n"
+        "• Photos: ✅\n"
+        "• Carousels: ✅"
+    )
+
+    send_message(
+        chat_id,
+        text,
+        None,
         "Markdown"
     )
 
@@ -928,11 +1009,17 @@ def webhook():
         ""
     ).strip()
 
+    user = message.get(
+        "from",
+        {}
+    )
+
     if not chat:
 
         return "OK"
 
     chat_id = chat["id"]
+
 
     # =====================================================
     # COMMAND
@@ -986,85 +1073,10 @@ def webhook():
 
     if cmd == "/ping":
 
-        # -----------------------------------------------
-        # OWNER VIEW
-        # -----------------------------------------------
-
-        if str(chat_id) == str(OWNER_CHAT_ID):
-
-            total, mine = get_stats(
-                chat_id
-            )
-
-            unique_users = (
-                get_unique_users()
-            )
-
-            username = (
-                chat.get("username")
-                or "No username"
-            )
-
-            first_name = (
-                chat.get("first_name")
-                or "Unknown"
-            )
-
-            last_name = (
-                chat.get("last_name")
-                or ""
-            )
-
-            full_name = (
-                f"{first_name} {last_name}"
-            ).strip()
-
-            chat_type = (
-                chat.get("type")
-                or "Unknown"
-            )
-
-            send_message(
-                chat_id,
-
-                "🏓 *PONG — OWNER PANEL*\n\n"
-
-                "🤖 *Bot Status:* Online\n"
-                "⚡ *Server Status:* OK\n\n"
-
-                "📊 *DOWNLOADS*\n"
-                f"📦 Total Downloads: {total}\n"
-                f"👥 Unique Users: {unique_users}\n"
-                f"👤 Your Downloads: {mine}\n\n"
-
-                "👤 *USER INFO*\n"
-                f"🆔 Chat ID: `{chat_id}`\n"
-                f"🔹 Name: {full_name}\n"
-                f"🔹 Username: @{username}\n"
-                f"🔹 Chat Type: {chat_type}\n\n"
-
-                "🟢 Everything is running.",
-
-                None,
-                "Markdown"
-            )
-
-        # -----------------------------------------------
-        # NORMAL USER VIEW
-        # -----------------------------------------------
-
-        else:
-
-            send_message(
-                chat_id,
-
-                "🏓 *Pong!*\n\n"
-                "🤖 Bot is online.\n"
-                "⚡ Status: OK",
-
-                None,
-                "Markdown"
-            )
+        send_ping(
+            chat_id,
+            user
+        )
 
         return "OK"
 
@@ -1168,8 +1180,54 @@ def _handle_download(
     ytdlp_dir = None
     extractor_dir = None
 
+    # Metadata is optional.
+    # If it fails, download continues.
+    metadata = {
+        "title": "",
+        "description": ""
+    }
 
     try:
+
+        # =================================================
+        # GET METADATA
+        # =================================================
+
+        try:
+
+            wait_for_instagram_cooldown()
+
+            metadata = get_instagram_metadata(
+                text
+            )
+
+            if not isinstance(
+                metadata,
+                dict
+            ):
+
+                metadata = {
+                    "title": "",
+                    "description": ""
+                }
+
+            print(
+                "METADATA:",
+                metadata
+            )
+
+        except Exception as metadata_error:
+
+            print(
+                "METADATA FAILED:",
+                repr(metadata_error)
+            )
+
+            metadata = {
+                "title": "",
+                "description": ""
+            }
+
 
         # =================================================
         # FIRST TRY: YT-DLP
@@ -1277,6 +1335,88 @@ def _handle_download(
 
 
         # =================================================
+        # METADATA MESSAGE
+        # =================================================
+
+        title = (
+            metadata.get(
+                "title",
+                ""
+            )
+            if isinstance(metadata, dict)
+            else ""
+        )
+
+        description = (
+            metadata.get(
+                "description",
+                ""
+            )
+            if isinstance(metadata, dict)
+            else ""
+        )
+
+        title = str(
+            title or ""
+        ).strip()
+
+        description = str(
+            description or ""
+        ).strip()
+
+
+        metadata_parts = []
+
+
+        if title:
+
+            metadata_parts.append(
+                f"📝 *Title:*\n{title}"
+            )
+
+
+        if description:
+
+            metadata_parts.append(
+                f"📄 *Description:*\n{description}"
+            )
+
+
+        if metadata_parts:
+
+            metadata_text = (
+                "ℹ️ *Post Information*\n\n"
+                + "\n\n".join(
+                    metadata_parts
+                )
+            )
+
+            # Telegram message text limit protection
+            if len(metadata_text) > 3900:
+
+                metadata_text = (
+                    metadata_text[:3900]
+                    + "\n\n…"
+                )
+
+            try:
+
+                send_message(
+                    chat_id,
+                    metadata_text,
+                    None,
+                    "Markdown"
+                )
+
+            except Exception as metadata_send_error:
+
+                print(
+                    "METADATA SEND ERROR:",
+                    repr(metadata_send_error)
+                )
+
+
+        # =================================================
         # SUCCESS
         # =================================================
 
@@ -1293,6 +1433,7 @@ def _handle_download(
         )
 
 
+        # Count one download per Instagram link.
         record_download(
             chat_id
         )
