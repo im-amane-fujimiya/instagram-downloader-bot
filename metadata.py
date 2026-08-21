@@ -1,10 +1,12 @@
-import json
 import subprocess
+import json
 
 
 def get_instagram_metadata(url):
     """
-    Metadata failure must NEVER stop the download.
+    Get Instagram title and description using yt-dlp.
+
+    Metadata failure will NEVER stop the download.
     """
 
     try:
@@ -14,24 +16,25 @@ def get_instagram_metadata(url):
             "--skip-download",
             "--no-warnings",
             "--no-playlist",
-            url,
+            url
         ]
 
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=60
         )
 
         if result.returncode != 0:
             print(
                 "METADATA ERROR:",
-                result.stderr[-1000:],
+                result.stderr[-1000:]
             )
+
             return {
                 "title": "",
-                "description": "",
+                "description": ""
             }
 
         data = json.loads(
@@ -50,17 +53,17 @@ def get_instagram_metadata(url):
 
         return {
             "title": title,
-            "description": description,
+            "description": description
         }
 
     except Exception as error:
 
         print(
             "METADATA EXCEPTION:",
-            repr(error),
+            repr(error)
         )
 
         return {
             "title": "",
-            "description": "",
+            "description": ""
         }
