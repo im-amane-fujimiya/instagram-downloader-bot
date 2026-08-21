@@ -19,9 +19,7 @@ from cleanup import schedule_delete
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
 
-TELEGRAM_API = (
-    f"https://api.telegram.org/bot{TOKEN}"
-)
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 OWNER_CHAT_ID = os.environ.get(
     "OWNER_CHAT_ID",
@@ -78,7 +76,7 @@ def wait_for_instagram_cooldown():
 
 
 # =========================================================
-# STATS
+# DOWNLOAD STATS
 # =========================================================
 
 STATS_FILE = os.path.join(
@@ -173,6 +171,20 @@ def get_stats(chat_id):
         return total, mine
 
 
+def get_unique_users():
+
+    with _stats_lock:
+
+        stats = _load_stats()
+
+        users = stats.get(
+            "users",
+            {}
+        )
+
+        return len(users)
+
+
 # =========================================================
 # BANNER
 # =========================================================
@@ -201,8 +213,8 @@ def setup_bot_commands():
             "description": "Download Instagram media"
         },
         {
-            "command": "stats",
-            "description": "See download stats"
+            "command": "ping",
+            "description": "Check bot status"
         },
         {
             "command": "help",
@@ -922,11 +934,21 @@ def webhook():
 
     chat_id = chat["id"]
 
-    # Extract command name safely (e.g., /stats@bot_name -> /stats)
-    cmd = text.split()[0].lower().split('@')[0] if text else ""
+    # =====================================================
+    # COMMAND
+    # =====================================================
+
+    cmd = (
+        text.split()[0]
+        .lower()
+        .split("@")[0]
+        if text
+        else ""
+    )
+
 
     # =====================================================
-    # COMMANDS
+    # START
     # =====================================================
 
     if cmd == "/start":
@@ -936,12 +958,20 @@ def webhook():
         return "OK"
 
 
+    # =====================================================
+    # HELP
+    # =====================================================
+
     if cmd == "/help":
 
         send_help(chat_id)
 
         return "OK"
 
+
+    # =====================================================
+    # ABOUT
+    # =====================================================
 
     if cmd == "/about":
 
@@ -950,34 +980,98 @@ def webhook():
         return "OK"
 
 
-    if cmd == "/stats":
+    # =====================================================
+    # PING
+    # =====================================================
 
-        try:
-            total, mine = get_stats(chat_id)
+    if cmd == "/ping":
 
-            if str(chat_id) == str(OWNER_CHAT_ID):
-                send_message(
-                    chat_id,
-                    "📊 *Bot Stats (Owner view)*\n\n"
-                    f"🌍 Total downloads (all users): {total}\n"
-                    f"👤 Your downloads: {mine}",
-                    None,
-                    "Markdown"
-                )
-            else:
-                send_message(
-                    chat_id,
-                    "📊 *Your Stats*\n\n"
-                    f"👤 Your downloads: {mine}",
-                    None,
-                    "Markdown"
-                )
-        except Exception as error:
-            print("STATS EXECUTION ERROR:", repr(error))
-            send_message(chat_id, "❌ Stats view karne me error aaya.")
+        # -----------------------------------------------
+        # OWNER VIEW
+        # -----------------------------------------------
+
+        if str(chat_id) == str(OWNER_CHAT_ID):
+
+            total, mine = get_stats(
+                chat_id
+            )
+
+            unique_users = (
+                get_unique_users()
+            )
+
+            username = (
+                chat.get("username")
+                or "No username"
+            )
+
+            first_name = (
+                chat.get("first_name")
+                or "Unknown"
+            )
+
+            last_name = (
+                chat.get("last_name")
+                or ""
+            )
+
+            full_name = (
+                f"{first_name} {last_name}"
+            ).strip()
+
+            chat_type = (
+                chat.get("type")
+                or "Unknown"
+            )
+
+            send_message(
+                chat_id,
+
+                "🏓 *PONG — OWNER PANEL*\n\n"
+
+                "🤖 *Bot Status:* Online\n"
+                "⚡ *Server Status:* OK\n\n"
+
+                "📊 *DOWNLOADS*\n"
+                f"📦 Total Downloads: {total}\n"
+                f"👥 Unique Users: {unique_users}\n"
+                f"👤 Your Downloads: {mine}\n\n"
+
+                "👤 *USER INFO*\n"
+                f"🆔 Chat ID: `{chat_id}`\n"
+                f"🔹 Name: {full_name}\n"
+                f"🔹 Username: @{username}\n"
+                f"🔹 Chat Type: {chat_type}\n\n"
+
+                "🟢 Everything is running.",
+
+                None,
+                "Markdown"
+            )
+
+        # -----------------------------------------------
+        # NORMAL USER VIEW
+        # -----------------------------------------------
+
+        else:
+
+            send_message(
+                chat_id,
+
+                "🏓 *Pong!*\n\n"
+                "🤖 Bot is online.\n"
+                "⚡ Status: OK",
+
+                None,
+                "Markdown"
+            )
 
         return "OK"
 
+
+    # =====================================================
+    # DOWNLOAD
+    # =====================================================
 
     if cmd == "/download":
 
@@ -1288,6 +1382,20 @@ def _handle_download(
             )
 
 
+# =========================================================
+# RUN SERVER
+# =========================================================
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            5000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+        )
