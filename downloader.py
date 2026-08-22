@@ -21,7 +21,6 @@ from metadata import (
 
 
 _download_lock = threading.Lock()
-
 _last_request_time = 0.0
 
 
@@ -29,7 +28,6 @@ def wait_for_instagram():
     global _last_request_time
 
     with _download_lock:
-
         now = time.monotonic()
 
         elapsed = (
@@ -144,14 +142,16 @@ def download_with_ytdlp(url):
 def download_instagram(url):
 
     """
-    Returns:
+    Main downloader.
 
-        temp_dir,
-        files,
+    Primary:
+        parth-dl
+
+    Fallback:
+        yt-dlp
+
+    Also returns:
         metadata
-
-    parth_dl is the primary downloader.
-    yt-dlp is used as fallback.
     """
 
     metadata = {
@@ -159,13 +159,48 @@ def download_instagram(url):
         "description": "",
     }
 
-    # Metadata must never block download.
+    # =============================================
+    # METADATA
+    # =============================================
+
     try:
-        metadata = (
-            get_instagram_metadata(url)
+
+        print(
+            "METADATA: fetching..."
+        )
+
+        result = get_instagram_metadata(
+            url
+        )
+
+        if isinstance(
+            result,
+            dict
+        ):
+
+            metadata = {
+                "title": (
+                    result.get(
+                        "title",
+                        ""
+                    ) or ""
+                ).strip(),
+
+                "description": (
+                    result.get(
+                        "description",
+                        ""
+                    ) or ""
+                ).strip(),
+            }
+
+        print(
+            "METADATA:",
+            metadata,
         )
 
     except Exception as error:
+
         print(
             "METADATA FAILED:",
             repr(error),
@@ -179,10 +214,14 @@ def download_instagram(url):
     try:
 
         # =============================================
-        # PRIMARY: parth_dl
+        # PRIMARY: PARTH-DL
         # =============================================
 
         try:
+
+            print(
+                "PARTH_DL: starting..."
+            )
 
             extractor_dir, files = (
                 extract_instagram_media(
@@ -191,6 +230,12 @@ def download_instagram(url):
             )
 
             if files:
+
+                print(
+                    "PARTH_DL SUCCESS:",
+                    files,
+                )
+
                 return (
                     extractor_dir,
                     files,
@@ -205,15 +250,24 @@ def download_instagram(url):
             )
 
         # =============================================
-        # FALLBACK: yt-dlp
+        # FALLBACK: YT-DLP
         # =============================================
 
         wait_for_instagram()
+
+        print(
+            "YTDLP: starting fallback..."
+        )
 
         ytdlp_dir, files = (
             download_with_ytdlp(
                 url
             )
+        )
+
+        print(
+            "YTDLP SUCCESS:",
+            files,
         )
 
         return (
@@ -225,11 +279,13 @@ def download_instagram(url):
     except Exception:
 
         if extractor_dir:
+
             cleanup_media(
                 extractor_dir
             )
 
         if ytdlp_dir:
+
             shutil.rmtree(
                 ytdlp_dir,
                 ignore_errors=True,
