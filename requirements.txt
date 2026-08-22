@@ -1,5 +1,3 @@
 flask
 requests
-gunicorn
 yt-dlp
-parth-dl
