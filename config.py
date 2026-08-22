@@ -1,26 +1,81 @@
 import os
 
 
-BOT_TOKEN = os.environ.get(
-    "BOT_TOKEN",
-    ""
-)
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 TELEGRAM_API = (
     f"https://api.telegram.org/bot{BOT_TOKEN}"
 )
 
-OWNER_CHAT_ID = str(
+
+# =========================================================
+# OWNER
+# =========================================================
+
+OWNER_CHAT_ID = os.environ.get(
+    "OWNER_CHAT_ID",
+    "-1002562168076"
+).strip()
+
+
+# =========================================================
+# SERVER
+# =========================================================
+
+PORT = int(
     os.environ.get(
-        "OWNER_CHAT_ID",
-        "-1002562168076"
+        "PORT",
+        "5000"
     )
 )
 
-MAX_CONCURRENT_DOWNLOADS = 1
 
-INSTAGRAM_COOLDOWN_SECONDS = 15
+# =========================================================
+# DOWNLOAD
+# =========================================================
 
-DOWNLOAD_TIMEOUT = 180
+DOWNLOAD_TIMEOUT = int(
+    os.environ.get(
+        "DOWNLOAD_TIMEOUT",
+        "180"
+    )
+)
 
-TELEGRAM_TIMEOUT = 120
+INSTAGRAM_COOLDOWN_SECONDS = int(
+    os.environ.get(
+        "INSTAGRAM_COOLDOWN_SECONDS",
+        "10"
+    )
+)
+
+
+# =========================================================
+# TELEGRAM FILE LIMIT
+# =========================================================
+
+MAX_FILE_SIZE = 45 * 1024 * 1024
+
+
+# =========================================================
+# AUTO DELETE
+# =========================================================
+
+DELETE_AFTER = 3 * 60 * 60
+
+
+# =========================================================
+# BANNER
+# =========================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+BANNER_PATH = os.path.join(
+    BASE_DIR,
+    "1787159942996.png"
+)
