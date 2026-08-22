@@ -639,10 +639,20 @@ def process_download(
 
         if loading_id:
 
-            delete_message(
-                chat_id,
-                loading_id,
-            )
+            try:
+
+                delete_message(
+                    TELEGRAM_API,
+                    chat_id,
+                    loading_id,
+                )
+
+            except Exception as error:
+
+                print(
+                    "LOADING DELETE ERROR:",
+                    repr(error),
+                )
 
             loading_id = None
 
@@ -738,29 +748,67 @@ def process_download(
             repr(error),
         )
 
+        # -------------------------------------------------
+        # Safe loading-message cleanup
+        # -------------------------------------------------
+
         if loading_id:
 
-            delete_message(
+            try:
+
+                delete_message(
+                    TELEGRAM_API,
+                    chat_id,
+                    loading_id,
+                )
+
+            except Exception as cleanup_error:
+
+                print(
+                    "LOADING DELETE ERROR:",
+                    repr(cleanup_error),
+                )
+
+            loading_id = None
+
+        # -------------------------------------------------
+        # Failure message
+        # -------------------------------------------------
+
+        try:
+
+            send_message(
                 chat_id,
-                loading_id,
+                "😬 <b>Download failed.</b>\n\n"
+                "Make sure the Instagram post is "
+                "public and the link is valid.\n\n"
+                "🔄 Please try again.",
+                None,
             )
 
-        send_message(
-            chat_id,
-            "😬 <b>Download failed.</b>\n\n"
-            "Make sure the Instagram post is "
-            "public and the link is valid.\n\n"
-            "🔄 Please try again.",
-            None,
-        )
+        except Exception as message_error:
+
+            print(
+                "FAILURE MESSAGE ERROR:",
+                repr(message_error),
+            )
 
     finally:
 
         if temp_dir:
 
-            cleanup_media(
-                temp_dir
-            )
+            try:
+
+                cleanup_media(
+                    temp_dir
+                )
+
+            except Exception as cleanup_error:
+
+                print(
+                    "TEMP CLEANUP ERROR:",
+                    repr(cleanup_error),
+                )
 
 
 # =========================================================
@@ -1125,4 +1173,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=PORT,
-        )
+    )
