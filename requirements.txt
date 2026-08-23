@@ -1,4 +1,3 @@
-flask
+Flask
 requests
 yt-dlp
-parth-dl==1.2.1
