@@ -2,7 +2,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import inspect
 
 from config import DOWNLOAD_TIMEOUT
 
@@ -15,15 +17,6 @@ YTDLP_FORMAT = (
 )
 
 
-def _run_ytdlp(command, timeout=DOWNLOAD_TIMEOUT):
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
 def _empty_metadata():
     return {
         "title": "",
@@ -33,10 +26,6 @@ def _empty_metadata():
 
 
 def _clean_url(url):
-    """
-    Remove Instagram tracking parameters.
-    Keeps the actual post/reel URL.
-    """
     url = (url or "").strip()
 
     if "?" in url:
@@ -44,10 +33,6 @@ def _clean_url(url):
 
     return url.rstrip("/")
 
-
-# =========================================================
-# PARTH-DL IMPORT
-# =========================================================
 
 def _get_parth():
     try:
@@ -61,19 +46,76 @@ def _get_parth():
         return None
 
 
+def _run_ytdlp(args, timeout=DOWNLOAD_TIMEOUT):
+
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+    ]
+
+    command.extend(args)
+
+    print(
+        "YTDLP:",
+        " ".join(command),
+    )
+
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _collect_files(temp_dir):
+
+    files = []
+
+    if not os.path.isdir(temp_dir):
+        return files
+
+    for root, dirs, filenames in os.walk(
+        temp_dir
+    ):
+
+        dirs.sort()
+        filenames.sort()
+
+        for filename in filenames:
+
+            path = os.path.join(
+                root,
+                filename,
+            )
+
+            if os.path.isfile(path):
+                files.append(path)
+
+    return files
+
+
 # =========================================================
-# PARTH-DL INFO
+# PARTH METADATA
 # =========================================================
 
 def _parth_metadata(url):
+
     parth = _get_parth()
 
     if not parth:
         return _empty_metadata()
 
     try:
+
         info = parth.get_info(
             _clean_url(url)
+        )
+
+        print(
+            "PARTH INFO:",
+            repr(info),
         )
 
         if not isinstance(info, dict):
@@ -101,6 +143,7 @@ def _parth_metadata(url):
         }
 
     except Exception as error:
+
         print(
             "PARTH METADATA FAILED:",
             repr(error),
@@ -110,30 +153,31 @@ def _parth_metadata(url):
 
 
 # =========================================================
-# YT-DLP METADATA
+# YTDLP METADATA
 # =========================================================
 
 def _ytdlp_metadata(url):
-    command = [
-        "yt-dlp",
+
+    args = [
         "--dump-single-json",
         "--skip-download",
         "--no-warnings",
         "--no-playlist",
-        "--flat-playlist",
         _clean_url(url),
     ]
 
     try:
+
         result = _run_ytdlp(
-            command,
+            args,
             timeout=60,
         )
 
         if result.returncode != 0:
+
             print(
-                "METADATA YTDLP ERROR:",
-                result.stderr[-1500:],
+                "YTDLP METADATA ERROR:",
+                result.stderr[-2000:],
             )
 
             return _empty_metadata()
@@ -159,6 +203,7 @@ def _ytdlp_metadata(url):
         }
 
     except Exception as error:
+
         print(
             "YTDLP METADATA EXCEPTION:",
             repr(error),
@@ -172,14 +217,6 @@ def _ytdlp_metadata(url):
 # =========================================================
 
 def get_instagram_metadata(url):
-    """
-    Metadata order:
-
-        1. parth-dl
-        2. yt-dlp
-
-    Metadata failure never blocks downloading.
-    """
 
     metadata = _parth_metadata(url)
 
@@ -191,6 +228,7 @@ def get_instagram_metadata(url):
             "uploader",
         )
     ):
+
         print(
             "METADATA SOURCE: parth-dl"
         )
@@ -207,6 +245,7 @@ def get_instagram_metadata(url):
             "uploader",
         )
     ):
+
         print(
             "METADATA SOURCE: yt-dlp"
         )
@@ -215,49 +254,18 @@ def get_instagram_metadata(url):
 
 
 # =========================================================
-# COLLECT FILES
+# PARTH DOWNLOAD
 # =========================================================
 
-def _collect_files(temp_dir):
-    files = []
-
-    if not os.path.isdir(temp_dir):
-        return files
-
-    for root, dirs, filenames in os.walk(
-        temp_dir
-    ):
-        dirs.sort()
-        filenames.sort()
-
-        for filename in filenames:
-
-            path = os.path.join(
-                root,
-                filename,
-            )
-
-            if os.path.isfile(path):
-                files.append(path)
-
-    return files
-
-
-# =========================================================
-# PARTH-DL DOWNLOAD
-# =========================================================
-
-def _download_with_parth(url, temp_dir):
-    """
-    Primary downloader.
-
-    parth-dl is preferred because it was
-    previously working well for photos/carousels.
-    """
+def _download_with_parth(
+    url,
+    temp_dir,
+):
 
     parth = _get_parth()
 
     if not parth:
+
         raise RuntimeError(
             "parth-dl is not installed."
         )
@@ -269,9 +277,24 @@ def _download_with_parth(url, temp_dir):
         clean_url,
     )
 
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # Do NOT use output_dir.
+    # parth-dl 1.2.1 does not accept it.
+    # -----------------------------------------------------
+
+    signature = inspect.signature(
+        parth.download
+    )
+
+    print(
+        "PARTH DOWNLOAD SIGNATURE:",
+        signature,
+    )
+
+    # Try the supported simple call.
     result = parth.download(
-        clean_url,
-        output_dir=temp_dir,
+        clean_url
     )
 
     print(
@@ -279,46 +302,174 @@ def _download_with_parth(url, temp_dir):
         repr(result),
     )
 
-    files = _collect_files(
-        temp_dir
-    )
+    # -----------------------------------------------------
+    # parth-dl may return a path/list/object.
+    # -----------------------------------------------------
 
-    if not files:
+    possible_files = []
+
+    if isinstance(result, str):
+
+        if os.path.isfile(result):
+            possible_files.append(
+                result
+            )
+
+        elif os.path.isdir(result):
+
+            possible_files.extend(
+                _collect_files(result)
+            )
+
+    elif isinstance(result, (list, tuple)):
+
+        for item in result:
+
+            if isinstance(item, str):
+                if os.path.isfile(item):
+                    possible_files.append(
+                        item
+                    )
+
+    elif isinstance(result, dict):
+
+        for key in (
+            "path",
+            "file",
+            "filename",
+            "filepath",
+        ):
+
+            value = result.get(key)
+
+            if (
+                isinstance(value, str)
+                and os.path.isfile(value)
+            ):
+                possible_files.append(
+                    value
+                )
+
+    # -----------------------------------------------------
+    # Also inspect /tmp because parth-dl may create
+    # its own temporary directory.
+    # -----------------------------------------------------
+
+    if not possible_files:
+
+        for root, dirs, filenames in os.walk(
+            "/tmp"
+        ):
+
+            for filename in filenames:
+
+                path = os.path.join(
+                    root,
+                    filename,
+                )
+
+                if not os.path.isfile(path):
+                    continue
+
+                # Only media files.
+                lower = filename.lower()
+
+                if lower.endswith(
+                    (
+                        ".mp4",
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp",
+                        ".heic",
+                        ".mov",
+                        ".m4v",
+                    )
+                ):
+
+                    possible_files.append(
+                        path
+                    )
+
+    if not possible_files:
+
         raise RuntimeError(
             "parth-dl completed but "
-            "no media file was created."
+            "no media file was found."
+        )
+
+    # -----------------------------------------------------
+    # Move/copy files into our own temp directory.
+    # -----------------------------------------------------
+
+    final_files = []
+
+    for index, source in enumerate(
+        possible_files
+    ):
+
+        if not os.path.isfile(source):
+            continue
+
+        extension = os.path.splitext(
+            source
+        )[1]
+
+        destination = os.path.join(
+            temp_dir,
+            f"{index + 1}{extension}",
+        )
+
+        try:
+
+            shutil.copy2(
+                source,
+                destination,
+            )
+
+            final_files.append(
+                destination
+            )
+
+        except Exception as error:
+
+            print(
+                "PARTH COPY ERROR:",
+                repr(error),
+            )
+
+    if not final_files:
+
+        raise RuntimeError(
+            "parth-dl media could not "
+            "be copied."
         )
 
     print(
         "PARTH FILES:",
-        files,
+        final_files,
     )
 
-    return files
+    return final_files
 
 
 # =========================================================
-# YT-DLP DOWNLOAD
+# YTDLP DOWNLOAD
 # =========================================================
 
-def _download_with_ytdlp(url, temp_dir):
-    """
-    Fallback downloader.
-
-    Primarily useful for Reels/videos.
-    """
+def _download_with_ytdlp(
+    url,
+    temp_dir,
+):
 
     output = os.path.join(
         temp_dir,
         "%(playlist_index)s_%(id)s.%(ext)s",
     )
 
-    command = [
-        "yt-dlp",
-
+    args = [
         "--no-warnings",
         "--restrict-filenames",
-
         "--yes-playlist",
 
         "-f",
@@ -330,13 +481,8 @@ def _download_with_ytdlp(url, temp_dir):
         _clean_url(url),
     ]
 
-    print(
-        "YTDLP:",
-        " ".join(command),
-    )
-
     result = _run_ytdlp(
-        command
+        args
     )
 
     print(
@@ -345,15 +491,17 @@ def _download_with_ytdlp(url, temp_dir):
     )
 
     if result.stderr:
+
         print(
             "YTDLP STDERR:",
-            result.stderr[-4000:],
+            result.stderr[-5000:],
         )
 
     if result.returncode != 0:
+
         raise RuntimeError(
-            result.stderr[-2000:]
-            or "yt-dlp download failed."
+            result.stderr[-2500:]
+            or "yt-dlp failed."
         )
 
     files = _collect_files(
@@ -361,8 +509,9 @@ def _download_with_ytdlp(url, temp_dir):
     )
 
     if not files:
+
         raise RuntimeError(
-            "yt-dlp completed but "
+            "yt-dlp finished but "
             "no media file was created."
         )
 
@@ -375,18 +524,19 @@ def _download_with_ytdlp(url, temp_dir):
 
 
 # =========================================================
-# MAIN DOWNLOAD FUNCTION
+# MAIN DOWNLOAD
 # =========================================================
 
 def download_instagram_media(url):
-    """
-    Public interface used by main.py.
 
-    Order:
+    """
+    Primary:
 
         parth-dl
-            ↓
-        yt-dlp fallback
+
+    Fallback:
+
+        yt-dlp through Python module
 
     Returns:
 
@@ -399,7 +549,7 @@ def download_instagram_media(url):
     )
 
     # -----------------------------------------------------
-    # PRIMARY: PARTH-DL
+    # PARTH
     # -----------------------------------------------------
 
     try:
@@ -421,18 +571,21 @@ def download_instagram_media(url):
             repr(error),
         )
 
-        # Clean failed attempt.
-        shutil.rmtree(
-            temp_dir,
-            ignore_errors=True,
-        )
+    # -----------------------------------------------------
+    # Reset temp directory
+    # -----------------------------------------------------
 
-        temp_dir = tempfile.mkdtemp(
-            prefix="instagram_"
-        )
+    shutil.rmtree(
+        temp_dir,
+        ignore_errors=True,
+    )
+
+    temp_dir = tempfile.mkdtemp(
+        prefix="instagram_"
+    )
 
     # -----------------------------------------------------
-    # FALLBACK: YT-DLP
+    # YT-DLP
     # -----------------------------------------------------
 
     try:
@@ -460,7 +613,7 @@ def download_instagram_media(url):
         )
 
         raise RuntimeError(
-            "Both downloaders failed."
+            "Both parth-dl and yt-dlp failed."
         )
 
 
@@ -475,4 +628,4 @@ def cleanup_media(temp_dir):
         shutil.rmtree(
             temp_dir,
             ignore_errors=True,
-        )
+    )
