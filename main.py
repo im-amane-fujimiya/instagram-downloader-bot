@@ -1,319 +1,260 @@
-import html
-import json
 import os
+import subprocess
+import tempfile
+import shutil
+import threading
 import time
+import json
 
 import requests
 from flask import Flask, request
 
-from config import (
-    BOT_TOKEN,
-    TELEGRAM_API,
-    OWNER_CHAT_ID,
-    PORT,
-    BANNER_PATH,
-    INSTAGRAM_COOLDOWN_SECONDS,
-)
-
-from extractor import (
-    download_instagram_media,
-    get_instagram_metadata,
-    cleanup_media,
-)
-
-from media import send_media
-
-from cleanup import (
-    delete_message,
-    schedule_delete,
-)
+from extractor import extract_instagram_media, cleanup_media
+from cleanup import schedule_delete
+from broadcast import register_chat, unregister_chat, get_broadcast_chats, broadcast_copy_message
 
 
-# =========================================================
-# APP
-# =========================================================
+TOKEN = os.environ["BOT_TOKEN"]
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+
+# Only this chat sees global stats.
+OWNER_CHAT_ID = os.environ.get("OWNER_CHAT_ID", "-1002562168076")
 
 app = Flask(__name__)
 
 
 # =========================================================
-# STATE
+# CONCURRENCY LIMIT
 # =========================================================
 
-START_TIME = time.monotonic()
+MAX_CONCURRENT_DOWNLOADS = 1
+download_semaphore = threading.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-_last_download_time = 0.0
-
-TOTAL_DOWNLOADS = 0
-
-USER_DOWNLOADS = {}
+PENDING_BROADCAST = set()
+BROADCAST_CONFIRMATIONS = {}
 
 
 # =========================================================
 # INSTAGRAM COOLDOWN
 # =========================================================
 
-def wait_for_instagram():
-    """
-    Keeps a small delay between Instagram download attempts.
+INSTAGRAM_COOLDOWN_SECONDS = 15
 
-    Note:
-    On Vercel, different serverless instances can have separate
-    memory, so this is not a global distributed rate limiter.
-    """
+_last_instagram_request_lock = threading.Lock()
+_last_instagram_request_time = 0.0
 
-    global _last_download_time
 
-    now = time.monotonic()
+def wait_for_instagram_cooldown():
+    global _last_instagram_request_time
 
-    elapsed = now - _last_download_time
+    with _last_instagram_request_lock:
+        now = time.monotonic()
+        elapsed = now - _last_instagram_request_time
+        remaining = INSTAGRAM_COOLDOWN_SECONDS - elapsed
 
-    remaining = (
-        INSTAGRAM_COOLDOWN_SECONDS
-        - elapsed
-    )
+        if remaining > 0:
+            time.sleep(remaining)
 
-    if remaining > 0:
-        time.sleep(remaining)
-
-    _last_download_time = time.monotonic()
+        _last_instagram_request_time = time.monotonic()
 
 
 # =========================================================
-# TELEGRAM REQUEST
+# STATS
 # =========================================================
 
-def telegram(
-    method,
-    payload=None,
-    files=None,
-    timeout=30,
-):
-    """
-    Central Telegram API helper.
-    """
+STATS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "stats.json"
+)
 
-    url = f"{TELEGRAM_API}/{method}"
+_stats_lock = threading.Lock()
 
-    response = requests.post(
-        url,
-        data=payload,
-        files=files,
-        timeout=timeout,
-    )
 
-    # -----------------------------------------------------
-    # HTTP ERROR
-    # -----------------------------------------------------
+def _load_stats():
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"total": 0, "users": {}}
 
-    if not response.ok:
 
-        print(
-            "TELEGRAM HTTP ERROR:",
-            response.status_code,
-            response.text[:2000],
-        )
+def record_download(chat_id):
+    with _stats_lock:
+        stats = _load_stats()
 
-        response.raise_for_status()
+        stats["total"] = stats.get("total", 0) + 1
 
-    # -----------------------------------------------------
-    # JSON
-    # -----------------------------------------------------
+        users = stats.setdefault("users", {})
+        key = str(chat_id)
+        users[key] = users.get(key, 0) + 1
+
+        try:
+            with open(STATS_FILE, "w", encoding="utf-8") as f:
+                json.dump(stats, f)
+        except Exception as error:
+            print("STATS WRITE ERROR:", repr(error))
+
+
+def get_stats(chat_id):
+    with _stats_lock:
+        stats = _load_stats()
+
+        total = stats.get("total", 0)
+        mine = stats.get("users", {}).get(str(chat_id), 0)
+
+        return total, mine
+
+
+# =========================================================
+# BANNER
+# =========================================================
+
+BANNER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "1787159942996.png"
+)
+
+
+# =========================================================
+# TELEGRAM COMMANDS + MENU
+# =========================================================
+
+def setup_bot_commands():
+
+    commands = [
+        {"command": "start", "description": "Start the downloader"},
+        {"command": "download", "description": "Download Instagram media"},
+        {"command": "stats", "description": "See download stats"},
+        {"command": "broadcast", "description": "Broadcast to groups/channels"},
+        {"command": "help", "description": "How to use the bot"},
+        {"command": "about", "description": "About this bot"}
+    ]
 
     try:
-
-        result = response.json()
-
-    except Exception:
-
-        print(
-            "TELEGRAM INVALID JSON:",
-            response.text[:2000],
+        response = requests.post(
+            f"{TELEGRAM_API}/setMyCommands",
+            json={"commands": commands},
+            timeout=30
         )
 
-        raise RuntimeError(
-            "Telegram returned an invalid response."
+        print("SET COMMANDS:", response.text)
+
+        response = requests.post(
+            f"{TELEGRAM_API}/setChatMenuButton",
+            json={
+                "menu_button": {
+                    "type": "commands",
+                    "text": "Menu"
+                }
+            },
+            timeout=30
         )
 
-    # -----------------------------------------------------
-    # TELEGRAM API ERROR
-    # -----------------------------------------------------
+        print("SET MENU:", response.text)
 
-    if not result.get("ok"):
+    except Exception as error:
+        print("COMMAND SETUP ERROR:", repr(error))
 
-        description = result.get(
-            "description",
-            "Telegram API error.",
-        )
 
-        print(
-            "TELEGRAM API ERROR:",
-            method,
-            description,
-        )
-
-        raise RuntimeError(
-            description
-        )
-
-    return result.get("result")
+setup_bot_commands()
 
 
 # =========================================================
 # SEND MESSAGE
 # =========================================================
 
-def send_message(
-    chat_id,
-    text,
-    reply_markup=None,
-    parse_mode="HTML",
-    auto_delete=True,
-):
-    """
-    Sends a Telegram message.
+def telegram_request(method, payload=None, timeout=30):
+    response = requests.post(
+        f"{TELEGRAM_API}/{method}",
+        json=payload or {},
+        timeout=timeout
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Telegram API error"))
+    return result.get("result")
 
-    IMPORTANT:
-    reply_markup must be JSON encoded before being sent.
-    """
 
-    payload = {
+def send_message(chat_id, text, reply_markup=None, parse_mode=None):
+
+    data = {
         "chat_id": chat_id,
-        "text": text,
+        "text": text
     }
 
-    # -----------------------------------------------------
-    # PARSE MODE
-    # -----------------------------------------------------
+    if reply_markup:
+        data["reply_markup"] = reply_markup
 
     if parse_mode:
+        data["parse_mode"] = parse_mode
 
-        payload["parse_mode"] = parse_mode
-
-    # -----------------------------------------------------
-    # KEYBOARD
-    # -----------------------------------------------------
-
-    if reply_markup:
-
-        payload["reply_markup"] = json.dumps(
-            reply_markup,
-            ensure_ascii=False,
-        )
-
-    # -----------------------------------------------------
-    # SEND
-    # -----------------------------------------------------
-
-    result = telegram(
-        "sendMessage",
-        payload=payload,
+    response = requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json=data,
+        timeout=30
     )
 
-    if not result:
+    response.raise_for_status()
 
-        raise RuntimeError(
-            "Telegram did not return a message."
-        )
+    result = response.json()
+    message_id = result["result"]["message_id"]
 
-    message_id = result.get(
-        "message_id"
+    schedule_delete(
+        TELEGRAM_API,
+        chat_id,
+        message_id
     )
-
-    # -----------------------------------------------------
-    # AUTO DELETE
-    # -----------------------------------------------------
-
-    if auto_delete and message_id:
-
-        try:
-
-            schedule_delete(
-                TELEGRAM_API,
-                chat_id,
-                message_id,
-            )
-
-        except Exception as error:
-
-            print(
-                "SCHEDULE DELETE ERROR:",
-                repr(error),
-            )
 
     return message_id
 
 
 # =========================================================
-# BUTTONS
+# DELETE MESSAGE
 # =========================================================
 
-def main_keyboard():
+def delete_message(chat_id, message_id):
 
-    return {
-        "inline_keyboard": [
+    if not message_id:
+        return
 
-            [
-                {
-                    "text": "🎬 Reels",
-                    "callback_data": "reels",
-                },
-                {
-                    "text": "🎥 Videos",
-                    "callback_data": "videos",
-                },
-            ],
+    try:
+        response = requests.post(
+            f"{TELEGRAM_API}/deleteMessage",
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id
+            },
+            timeout=30
+        )
 
-            [
-                {
-                    "text": "🖼️ Photos",
-                    "callback_data": "photos",
-                },
-                {
-                    "text": "📚 Carousel",
-                    "callback_data": "carousel",
-                },
-            ],
+        if not response.ok:
+            print("DELETE MESSAGE ERROR:", response.text)
 
-            [
-                {
-                    "text": "❓ Help",
-                    "callback_data": "help",
-                },
-                {
-                    "text": "ℹ️ About",
-                    "callback_data": "about",
-                },
-            ],
-        ]
-    }
+    except Exception as error:
+        print("DELETE MESSAGE ERROR:", repr(error))
 
 
 # =========================================================
-# CALLBACK ANSWER
+# ANSWER CALLBACK
 # =========================================================
 
 def answer_callback(callback_id):
 
     if not callback_id:
-
         return
 
     try:
-
-        telegram(
-            "answerCallbackQuery",
-            payload={
-                "callback_query_id": callback_id,
+        requests.post(
+            f"{TELEGRAM_API}/answerCallbackQuery",
+            json={
+                "callback_query_id": callback_id
             },
+            timeout=30
         )
 
     except Exception as error:
-
-        print(
-            "CALLBACK ERROR:",
-            repr(error),
-        )
+        print("CALLBACK ERROR:", repr(error))
 
 
 # =========================================================
@@ -322,88 +263,136 @@ def answer_callback(callback_id):
 
 def send_start(chat_id):
 
-    text = (
-        "👋 <b>Welcome to Instagram All-in-One!</b>\n\n"
-
-        "🚀 Download public Instagram "
-        "<b>Reels, Videos, Photos & Carousels.</b>\n\n"
-
+    caption = (
+        "👋 *Welcome to Instagram All-in-One!*\n\n"
+        "🚀 Your simple sidekick for "
+        "*Reels, Videos, Photos & Carousels.*\n\n"
         "😂 Instagram: “Save this post.”\n"
         "😎 Me: “Why save it when I can download it?”\n\n"
-
         "📥 Send me a public Instagram link "
         "and I'll handle the boring part.\n\n"
-
-        "👇 Choose an option below."
+        "👇 Or use the buttons below."
     )
 
-    # -----------------------------------------------------
-    # BANNER
-    # -----------------------------------------------------
+    try:
+        if os.path.isfile(BANNER_PATH):
 
-    if os.path.isfile(BANNER_PATH):
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🎬 Reels",
+                            "callback_data": "reels"
+                        },
+                        {
+                            "text": "🎥 Videos",
+                            "callback_data": "videos"
+                        }
+                    ],
+                    [
+                        {
+                            "text": "🖼️ Photos",
+                            "callback_data": "photos"
+                        },
+                        {
+                            "text": "📚 Carousel",
+                            "callback_data": "carousel"
+                        }
+                    ],
+                    [
+                        {
+                            "text": "❓ Help",
+                            "callback_data": "help"
+                        }
+                    ]
+                ]
+            }
 
-        try:
+            with open(BANNER_PATH, "rb") as banner:
 
-            with open(
-                BANNER_PATH,
-                "rb",
-            ) as banner:
-
-                result = telegram(
-                    "sendPhoto",
-                    payload={
+                response = requests.post(
+                    f"{TELEGRAM_API}/sendPhoto",
+                    data={
                         "chat_id": chat_id,
-
-                        "caption": text,
-
-                        "parse_mode": "HTML",
-
-                        "reply_markup": json.dumps(
-                            main_keyboard(),
-                            ensure_ascii=False,
-                        ),
+                        "caption": caption,
+                        "parse_mode": "Markdown",
+                        "reply_markup": json.dumps(keyboard)
                     },
                     files={
-                        "photo": banner,
+                        "photo": banner
                     },
-                    timeout=60,
+                    timeout=60
                 )
 
-            if result and result.get("message_id"):
+            response.raise_for_status()
 
-                try:
+            photo_message_id = response.json()["result"]["message_id"]
 
-                    schedule_delete(
-                        TELEGRAM_API,
-                        chat_id,
-                        result["message_id"],
-                    )
-
-                except Exception as error:
-
-                    print(
-                        "BANNER DELETE SCHEDULE ERROR:",
-                        repr(error),
-                    )
-
-            return
-
-        except Exception as error:
-
-            print(
-                "BANNER ERROR:",
-                repr(error),
+            schedule_delete(
+                TELEGRAM_API,
+                chat_id,
+                photo_message_id
             )
 
-    # -----------------------------------------------------
-    # FALLBACK
-    # -----------------------------------------------------
+        else:
+            print("BANNER NOT FOUND:", BANNER_PATH)
+            send_message(
+                chat_id,
+                caption,
+                None,
+                "Markdown"
+            )
+
+    except Exception as error:
+        print("START ERROR:", repr(error))
+        send_menu(chat_id)
+
+
+# =========================================================
+# INLINE MENU
+# =========================================================
+
+def send_menu(chat_id):
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🎬 Reels",
+                    "callback_data": "reels"
+                },
+                {
+                    "text": "🎥 Videos",
+                    "callback_data": "videos"
+                }
+            ],
+            [
+                {
+                    "text": "🖼️ Photos",
+                    "callback_data": "photos"
+                },
+                {
+                    "text": "📚 Carousel",
+                    "callback_data": "carousel"
+                }
+            ],
+            [
+                {
+                    "text": "❓ Help",
+                    "callback_data": "help"
+                }
+            ]
+        ]
+    }
 
     send_message(
         chat_id,
-        text,
-        main_keyboard(),
+        "📥 *Instagram Downloader*\n\n"
+        "Send any public Instagram link and "
+        "I'll handle the rest. 🚀\n\n"
+        "Choose an option below:",
+        keyboard,
+        "Markdown"
     )
 
 
@@ -413,26 +402,32 @@ def send_start(chat_id):
 
 def send_help(chat_id):
 
-    text = (
-        "❓ <b>How to use</b>\n\n"
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📥 Download",
+                    "callback_data": "menu"
+                }
+            ]
+        ]
+    }
 
+    send_message(
+        chat_id,
+        "❓ *How to use Instagram All-in-One*\n\n"
         "1️⃣ Copy a public Instagram link.\n"
-        "2️⃣ Send it here.\n"
-        "3️⃣ Wait while the media is downloaded.\n\n"
-
+        "2️⃣ Send it to the bot.\n"
+        "3️⃣ Wait while I fetch the media. 🚀\n\n"
         "✅ Reels\n"
         "✅ Videos\n"
         "✅ Photos\n"
         "✅ Carousels\n\n"
-
-        "🔒 Private/login-protected posts "
-        "are not supported."
-    )
-
-    send_message(
-        chat_id,
-        text,
-        main_keyboard(),
+        "🔒 Private or login-protected content "
+        "isn't supported.\n\n"
+        "💡 Type / to see available commands.",
+        keyboard,
+        "Markdown"
     )
 
 
@@ -442,126 +437,162 @@ def send_help(chat_id):
 
 def send_about(chat_id):
 
-    text = (
-        "ℹ️ <b>Instagram All-in-One</b>\n\n"
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📥 Download",
+                    "callback_data": "menu"
+                },
+                {
+                    "text": "❓ Help",
+                    "callback_data": "help"
+                }
+            ]
+        ]
+    }
 
+    send_message(
+        chat_id,
+        "ℹ️ *Instagram All-in-One*\n\n"
         "A simple Telegram downloader for "
-        "public Instagram media.\n\n"
-
+        "public Instagram media. 🚀\n\n"
         "🎬 Reels\n"
         "🎥 Videos\n"
         "🖼️ Photos\n"
         "📚 Carousels\n\n"
-
-        "⚡ Fast • Simple • Automated"
-    )
-
-    send_message(
-        chat_id,
-        text,
-        main_keyboard(),
-    )
-
-
-# =========================================================
-# PING
-# =========================================================
-
-def send_ping(chat_id):
-
-    uptime = int(
-        time.monotonic()
-        - START_TIME
-    )
-
-    hours = uptime // 3600
-
-    minutes = (
-        uptime % 3600
-    ) // 60
-
-    seconds = (
-        uptime % 60
-    )
-
-    total = TOTAL_DOWNLOADS
-
-    users = len(
-        USER_DOWNLOADS
-    )
-
-    text = (
-        "🏓 <b>Pong!</b>\n\n"
-
-        "🟢 Status: <b>Online</b>\n"
-
-        f"⏱️ Uptime: <b>"
-        f"{hours}h {minutes}m {seconds}s"
-        f"</b>\n"
-
-        f"📥 Downloads: <b>{total}</b>\n"
-
-        f"👥 Users: <b>{users}</b>"
-    )
-
-    send_message(
-        chat_id,
-        text,
-        None,
-        auto_delete=False,
+        "⚡ Simple\n"
+        "🎯 Easy to use\n"
+        "🤖 Automated\n\n"
+        "Built to make saving public Instagram "
+        "media a little less annoying. 😎",
+        keyboard,
+        "Markdown"
     )
 
 
 # =========================================================
-# STATS
+# SEND MEDIA
 # =========================================================
 
-def record_download(chat_id):
+def send_media(chat_id, filepath):
 
-    global TOTAL_DOWNLOADS
+    extension = os.path.splitext(filepath)[1].lower()
 
-    TOTAL_DOWNLOADS += 1
+    if extension in [".jpg", ".jpeg", ".png", ".webp"]:
+        method = "sendPhoto"
+        field = "photo"
 
-    key = str(chat_id)
+    elif extension in [".mp4", ".mov", ".mkv", ".webm"]:
+        method = "sendVideo"
+        field = "video"
 
-    USER_DOWNLOADS[key] = (
-        USER_DOWNLOADS.get(
-            key,
-            0,
+    else:
+        method = "sendDocument"
+        field = "document"
+
+    with open(filepath, "rb") as media:
+
+        response = requests.post(
+            f"{TELEGRAM_API}/{method}",
+            data={
+                "chat_id": chat_id
+            },
+            files={
+                field: media
+            },
+            timeout=120
         )
-        + 1
+
+    response.raise_for_status()
+
+
+# =========================================================
+# YT-DLP
+# =========================================================
+
+YTDLP_FORMAT = (
+    "best[height<=720][filesize<80M]/"
+    "best[height<=720]/"
+    "best[filesize<80M]/"
+    "best"
+)
+
+
+def download_with_ytdlp(url):
+
+    temp_dir = tempfile.mkdtemp()
+
+    output = os.path.join(
+        temp_dir,
+        "%(playlist_index)s_%(id)s.%(ext)s"
     )
 
+    command = [
+        "yt-dlp",
+        "--no-warnings",
+        "--restrict-filenames",
+        "--no-playlist",
+        "-f",
+        YTDLP_FORMAT,
+        "-o",
+        output,
+        url
+    ]
 
-def send_stats(chat_id):
+    print("YTDLP:", " ".join(command))
 
-    total = TOTAL_DOWNLOADS
-
-    users = len(
-        USER_DOWNLOADS
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=180
     )
 
-    mine = USER_DOWNLOADS.get(
-        str(chat_id),
-        0,
+    print(
+        "YTDLP RETURN CODE:",
+        result.returncode
     )
 
-    text = (
-        "📊 <b>Bot Stats</b>\n\n"
-
-        f"📥 Total downloads: <b>{total}</b>\n"
-
-        f"👥 Unique users: <b>{users}</b>\n"
-
-        f"🙋 Your downloads: <b>{mine}</b>"
+    print(
+        "YTDLP STDERR:",
+        result.stderr[-2000:]
     )
 
-    send_message(
-        chat_id,
-        text,
-        None,
-        auto_delete=False,
-    )
+    if result.returncode != 0:
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
+        )
+
+        raise Exception(
+            result.stderr[-1000:]
+        )
+
+    files = []
+
+    for filename in os.listdir(temp_dir):
+
+        path = os.path.join(
+            temp_dir,
+            filename
+        )
+
+        if os.path.isfile(path):
+            files.append(path)
+
+    if not files:
+
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
+        )
+
+        raise Exception(
+            "yt-dlp finished but no media file was created."
+        )
+
+    return temp_dir, files
 
 
 # =========================================================
@@ -570,666 +601,94 @@ def send_stats(chat_id):
 
 def is_instagram_url(url):
 
-    if not url:
-
-        return False
-
-    value = url.lower().strip()
+    url = url.strip().lower()
 
     return (
-        "instagram.com/" in value
-        or
-        "instagr.am/" in value
+        "instagram.com/" in url
+        or "www.instagram.com/" in url
+        or "instagr.am/" in url
     )
-
-
-# =========================================================
-# METADATA CAPTION
-# =========================================================
-
-def build_metadata_caption(metadata):
-
-    if not metadata:
-
-        return None
-
-    title = (
-        metadata.get("title")
-        or ""
-    ).strip()
-
-    description = (
-        metadata.get("description")
-        or ""
-    ).strip()
-
-    uploader = (
-        metadata.get("uploader")
-        or ""
-    ).strip()
-
-    # -----------------------------------------------------
-    # Avoid duplicate title/description
-    # -----------------------------------------------------
-
-    if (
-        title
-        and description
-        and title == description
-    ):
-
-        description = ""
-
-    parts = []
-
-    # -----------------------------------------------------
-    # USERNAME
-    # -----------------------------------------------------
-
-    if uploader:
-
-        parts.append(
-            "👤 <b>"
-            + html.escape(
-                uploader
-            )
-            + "</b>"
-        )
-
-    # -----------------------------------------------------
-    # TITLE
-    # -----------------------------------------------------
-
-    if title:
-
-        parts.append(
-            "📝 <b>"
-            + html.escape(
-                title[:500]
-            )
-            + "</b>"
-        )
-
-    # -----------------------------------------------------
-    # DESCRIPTION
-    # -----------------------------------------------------
-
-    if description:
-
-        parts.append(
-            "💬 "
-            + html.escape(
-                description[:700]
-            )
-        )
-
-    # -----------------------------------------------------
-    # EMPTY
-    # -----------------------------------------------------
-
-    if not parts:
-
-        return None
-
-    caption = "\n\n".join(
-        parts
-    )
-
-    # Telegram caption safety.
-    return caption[:1000]
-
-
-# =========================================================
-# SAFE DELETE MESSAGE
-# =========================================================
-
-def safe_delete_message(
-    chat_id,
-    message_id,
-):
-
-    if not message_id:
-
-        return
-
-    try:
-
-        delete_message(
-            TELEGRAM_API,
-            chat_id,
-            message_id,
-        )
-
-    except Exception as error:
-
-        print(
-            "DELETE MESSAGE ERROR:",
-            repr(error),
-        )
-
-
-# =========================================================
-# DOWNLOAD
-# =========================================================
-
-def process_download(
-    chat_id,
-    url,
-):
-    """
-    Main Instagram download pipeline.
-
-    IMPORTANT FOR VERCEL:
-    This function is intentionally NOT launched inside
-    a daemon/background thread.
-
-    The webhook request stays alive while this function runs.
-    This avoids Vercel killing a background thread after
-    returning HTTP 200.
-    """
-
-    loading_id = None
-
-    temp_dir = None
-
-    try:
-
-        print(
-            "DOWNLOAD REQUEST:",
-            chat_id,
-            url,
-        )
-
-        # =================================================
-        # LOADING MESSAGE
-        # =================================================
-
-        try:
-
-            loading_id = send_message(
-                chat_id,
-
-                "⏳ <b>Fetching Instagram media...</b>\n\n"
-                "Please wait.",
-
-                None,
-
-                auto_delete=False,
-            )
-
-        except Exception as error:
-
-            print(
-                "LOADING MESSAGE ERROR:",
-                repr(error),
-            )
-
-        # =================================================
-        # COOLDOWN
-        # =================================================
-
-        wait_for_instagram()
-
-        # =================================================
-        # METADATA
-        # =================================================
-
-        metadata = {}
-
-        try:
-
-            metadata = (
-                get_instagram_metadata(
-                    url
-                )
-                or {}
-            )
-
-            print(
-                "METADATA:",
-                metadata,
-            )
-
-        except Exception as error:
-
-            print(
-                "METADATA FAILED:",
-                repr(error),
-            )
-
-            metadata = {}
-
-        # =================================================
-        # DOWNLOAD
-        # =================================================
-
-        print(
-            "STARTING INSTAGRAM DOWNLOAD:",
-            url,
-        )
-
-        result = download_instagram_media(
-            url
-        )
-
-        if not result:
-
-            raise RuntimeError(
-                "Downloader returned no result."
-            )
-
-        temp_dir, files = result
-
-        print(
-            "DOWNLOADED FILES:",
-            files,
-        )
-
-        # =================================================
-        # VALIDATE
-        # =================================================
-
-        if not files:
-
-            raise RuntimeError(
-                "No media files were downloaded."
-            )
-
-        # =================================================
-        # REMOVE LOADING
-        # =================================================
-
-        if loading_id:
-
-            safe_delete_message(
-                chat_id,
-                loading_id,
-            )
-
-            loading_id = None
-
-        # =================================================
-        # CAPTION
-        # =================================================
-
-        caption = (
-            build_metadata_caption(
-                metadata
-            )
-        )
-
-        # =================================================
-        # SEND MEDIA
-        # =================================================
-
-        sent = 0
-
-        total_files = len(
-            files
-        )
-
-        for index, filepath in enumerate(
-            files
-        ):
-
-            if not filepath:
-
-                continue
-
-            if not os.path.isfile(
-                filepath
-            ):
-
-                print(
-                    "FILE DOES NOT EXIST:",
-                    filepath,
-                )
-
-                continue
-
-            try:
-
-                current_caption = None
-
-                # Caption only on first file.
-                if index == 0:
-
-                    current_caption = caption
-
-                print(
-                    "SENDING MEDIA:",
-                    filepath,
-                )
-
-                send_media(
-                    chat_id,
-                    filepath,
-                    current_caption,
-                )
-
-                sent += 1
-
-            except Exception as error:
-
-                print(
-                    "MEDIA SEND ERROR:",
-                    repr(error),
-                )
-
-                try:
-
-                    send_message(
-                        chat_id,
-
-                        "⚠️ One media file "
-                        "could not be sent.",
-
-                        None,
-                    )
-
-                except Exception as message_error:
-
-                    print(
-                        "MEDIA ERROR MESSAGE FAILED:",
-                        repr(message_error),
-                    )
-
-        # =================================================
-        # NOTHING SENT
-        # =================================================
-
-        if sent == 0:
-
-            raise RuntimeError(
-                "Downloaded media could not "
-                "be sent to Telegram."
-            )
-
-        # =================================================
-        # RECORD DOWNLOAD
-        # =================================================
-
-        record_download(
-            chat_id
-        )
-
-        # =================================================
-        # SUCCESS
-        # =================================================
-
-        if total_files > 1:
-
-            send_message(
-                chat_id,
-
-                "✅ <b>Done!</b>\n\n"
-                f"📦 {sent} media files sent.",
-
-                None,
-
-                auto_delete=False,
-            )
-
-        else:
-
-            send_message(
-                chat_id,
-
-                "✅ <b>Done!</b>",
-
-                None,
-
-                auto_delete=False,
-            )
-
-        print(
-            "DOWNLOAD SUCCESS:",
-            chat_id,
-            sent,
-        )
-
-    # =====================================================
-    # DOWNLOAD ERROR
-    # =====================================================
-
-    except Exception as error:
-
-        print(
-            "DOWNLOAD ERROR:",
-            repr(error),
-        )
-
-        # -------------------------------------------------
-        # Remove loading
-        # -------------------------------------------------
-
-        if loading_id:
-
-            safe_delete_message(
-                chat_id,
-                loading_id,
-            )
-
-            loading_id = None
-
-        # -------------------------------------------------
-        # Failure message
-        # -------------------------------------------------
-
-        try:
-
-            send_message(
-                chat_id,
-
-                "😬 <b>Download failed.</b>\n\n"
-
-                "Make sure the Instagram post is "
-                "public and the link is valid.\n\n"
-
-                "🔄 Please try again.",
-
-                None,
-            )
-
-        except Exception as message_error:
-
-            print(
-                "FAILURE MESSAGE ERROR:",
-                repr(message_error),
-            )
-
-    # =====================================================
-    # CLEANUP
-    # =====================================================
-
-    finally:
-
-        if temp_dir:
-
-            try:
-
-                cleanup_media(
-                    temp_dir
-                )
-
-                print(
-                    "TEMP CLEANUP COMPLETE:",
-                    temp_dir,
-                )
-
-            except Exception as cleanup_error:
-
-                print(
-                    "TEMP CLEANUP ERROR:",
-                    repr(cleanup_error),
-                )
 
 
 # =========================================================
 # BUTTON HANDLER
 # =========================================================
 
-def handle_button(
-    chat_id,
-    callback_id,
-    action,
-):
+def handle_button(chat_id, callback_id, action):
 
-    # Always acknowledge button first.
-    answer_callback(
-        callback_id
-    )
+    answer_callback(callback_id)
 
-    # -----------------------------------------------------
-    # HELP
-    # -----------------------------------------------------
-
-    if action == "help":
-
-        try:
-
-            send_help(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "HELP ERROR:",
-                repr(error),
-            )
-
+    if action == "broadcast_cancel":
+        BROADCAST_CONFIRMATIONS.pop(str(chat_id), None)
+        send_message(chat_id, "❌ *Broadcast cancelled.*", None, "Markdown")
         return
 
-    # -----------------------------------------------------
-    # ABOUT
-    # -----------------------------------------------------
-
-    if action == "about":
-
-        try:
-
-            send_about(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "ABOUT ERROR:",
-                repr(error),
-            )
-
+    if action == "broadcast_confirm":
+        if str(chat_id) != str(OWNER_CHAT_ID):
+            return
+        message_id = BROADCAST_CONFIRMATIONS.pop(str(chat_id), None)
+        if not message_id:
+            send_message(chat_id, "⚠️ *Broadcast expired.* Use /broadcast again.", None, "Markdown")
+            return
+        targets = get_broadcast_chats()
+        send_message(chat_id, f"📢 *Broadcasting...*\n\nTargets: {len(targets)}", None, "Markdown")
+        success, failed, total = broadcast_copy_message(
+            TELEGRAM_API, chat_id, message_id, telegram_request
+        )
+        send_message(
+            chat_id,
+            "📢 *Broadcast complete!*\n\n"
+            f"📨 Targets: *{total}*\n"
+            f"✅ Sent: *{success}*\n"
+            f"❌ Failed: *{failed}*",
+            None, "Markdown"
+        )
         return
 
-    # -----------------------------------------------------
-    # MEDIA MODES
-    # -----------------------------------------------------
+    if action == "menu":
+        send_menu(chat_id)
 
-    messages = {
+    elif action == "help":
+        send_help(chat_id)
 
-        "reels":
+    elif action == "reels":
 
-            "🎬 <b>Reels mode ready!</b>\n\n"
-            "Send a public Instagram Reel link.",
-
-        "videos":
-
-            "🎥 <b>Video mode ready!</b>\n\n"
-            "Send a public Instagram video link.",
-
-        "photos":
-
-            "🖼️ <b>Photo mode ready!</b>\n\n"
-            "Send a public Instagram photo link.",
-
-        "carousel":
-
-            "📚 <b>Carousel mode ready!</b>\n\n"
-            "Send a public Instagram carousel link.",
-    }
-
-    if action in messages:
-
-        try:
-
-            send_message(
-                chat_id,
-                messages[action],
-                main_keyboard(),
-            )
-
-        except Exception as error:
-
-            print(
-                "BUTTON MESSAGE ERROR:",
-                repr(error),
-            )
-
-
-# =========================================================
-# COMMAND SETUP
-# =========================================================
-
-def setup_commands():
-
-    commands = [
-
-        {
-            "command": "start",
-            "description": "Start the downloader",
-        },
-
-        {
-            "command": "download",
-            "description": "Download Instagram media",
-        },
-
-        {
-            "command": "ping",
-            "description": "Check bot status",
-        },
-
-        {
-            "command": "stats",
-            "description": "Show download stats",
-        },
-
-        {
-            "command": "help",
-            "description": "How to use the bot",
-        },
-
-        {
-            "command": "about",
-            "description": "About this bot",
-        },
-    ]
-
-    try:
-
-        result = telegram(
-            "setMyCommands",
-
-            payload={
-                "commands": json.dumps(
-                    commands,
-                    ensure_ascii=False,
-                )
-            },
-
+        send_message(
+            chat_id,
+            "🎬 *Reels mode ready!*\n\n"
+            "Send a public Instagram Reel link. 🚀",
+            None,
+            "Markdown"
         )
 
-        print(
-            "SET COMMANDS:",
-            result,
+    elif action == "videos":
+
+        send_message(
+            chat_id,
+            "🎥 *Video mode ready!*\n\n"
+            "Send a public Instagram video post link. 🚀",
+            None,
+            "Markdown"
         )
 
-    except Exception as error:
+    elif action == "photos":
 
-        print(
-            "COMMAND SETUP ERROR:",
-            repr(error),
+        send_message(
+            chat_id,
+            "🖼️ *Photos mode ready!*\n\n"
+            "Send a public Instagram photo post link. 🚀",
+            None,
+            "Markdown"
+        )
+
+    elif action == "carousel":
+
+        send_message(
+            chat_id,
+            "📚 *Carousel mode ready!*\n\n"
+            "Send a public Instagram carousel link. 🚀",
+            None,
+            "Markdown"
         )
 
 
@@ -1240,44 +699,46 @@ def setup_commands():
 @app.get("/")
 def home():
 
-    return (
-        "Instagram All-in-One Bot is running!"
-    )
+    return "Instagram All-in-One Bot is running!"
 
 
 # =========================================================
 # WEBHOOK
 # =========================================================
 
-@app.post("/")
 @app.post("/webhook")
 def webhook():
 
-    print(
-        "WEBHOOK RECEIVED"
-    )
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     # =====================================================
-    # PARSE UPDATE
+    # CHANNEL POSTS
     # =====================================================
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
-
-    if not data:
-
-        print(
-            "EMPTY WEBHOOK UPDATE"
-        )
-
-        return "OK", 200
+    channel_post = data.get("channel_post")
+    if channel_post:
+        register_chat(channel_post.get("chat"))
+        return "OK"
 
     # =====================================================
-    # CALLBACK QUERY
+    # BOT CHAT MEMBERSHIP
+    # =====================================================
+
+    my_chat_member = data.get("my_chat_member")
+    if my_chat_member:
+        member_chat = my_chat_member.get("chat")
+        status = my_chat_member.get("new_chat_member", {}).get("status")
+        if member_chat:
+            if status in ("member", "administrator"):
+                register_chat(member_chat)
+            elif status in ("left", "kicked"):
+                unregister_chat(member_chat.get("id"))
+        return "OK"
+
+    # =====================================================
+    # INLINE BUTTON
     # =====================================================
 
     callback = data.get(
@@ -1286,13 +747,10 @@ def webhook():
 
     if callback:
 
-        callback_id = callback.get(
-            "id"
-        )
-
+        callback_id = callback.get("id")
         callback_data = callback.get(
             "data",
-            "",
+            ""
         )
 
         message = callback.get(
@@ -1307,25 +765,16 @@ def webhook():
 
             if chat:
 
-                try:
+                handle_button(
+                    chat["id"],
+                    callback_id,
+                    callback_data
+                )
 
-                    handle_button(
-                        chat["id"],
-                        callback_id,
-                        callback_data,
-                    )
-
-                except Exception as error:
-
-                    print(
-                        "CALLBACK HANDLER ERROR:",
-                        repr(error),
-                    )
-
-        return "OK", 200
+        return "OK"
 
     # =====================================================
-    # MESSAGE
+    # NORMAL MESSAGE
     # =====================================================
 
     message = data.get(
@@ -1333,279 +782,400 @@ def webhook():
     )
 
     if not message:
-
-        return "OK", 200
-
-    # =====================================================
-    # CHAT
-    # =====================================================
+        return "OK"
 
     chat = message.get(
         "chat"
     )
 
-    if not chat:
-
-        return "OK", 200
-
-    chat_id = chat.get(
-        "id"
-    )
-
-    if not chat_id:
-
-        return "OK", 200
-
-    # =====================================================
-    # TEXT
-    # =====================================================
-
-    text = (
-        message.get(
-            "text",
-            "",
-        )
-        or ""
+    text = message.get(
+        "text",
+        ""
     ).strip()
 
-    if not text:
+    if not chat:
+        return "OK"
 
-        return "OK", 200
+    chat_id = chat["id"]
 
-    print(
-        "MESSAGE:",
-        chat_id,
-        text,
-    )
+    register_chat(chat)
 
     # =====================================================
-    # COMMAND
+    # PENDING BROADCAST MESSAGE
     # =====================================================
 
-    first_word = (
-        text.split()[0]
-        if text
-        else ""
-    )
+    if str(chat_id) in PENDING_BROADCAST:
+        PENDING_BROADCAST.discard(str(chat_id))
+        if str(chat_id) != str(OWNER_CHAT_ID):
+            return "OK"
 
-    command = (
-        first_word
-        .lower()
-        .split("@")[0]
-    )
+        message_id = message.get("message_id")
+        if not message_id:
+            send_message(chat_id, "❌ Could not read that message.", None, "Markdown")
+            return "OK"
 
-    # =====================================================
-    # /START
-    # =====================================================
-
-    if command == "/start":
-
-        try:
-
-            send_start(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "START ERROR:",
-                repr(error),
-            )
-
-        return "OK", 200
+        BROADCAST_CONFIRMATIONS[str(chat_id)] = message_id
+        keyboard = {"inline_keyboard": [[
+            {"text": "✅ Send Broadcast", "callback_data": "broadcast_confirm"},
+            {"text": "❌ Cancel", "callback_data": "broadcast_cancel"}
+        ]]}
+        send_message(
+            chat_id,
+            "📢 *Broadcast ready!*\n\n"
+            "Ye message registered groups/channels me copy hoga.\n\n"
+            "Neeche *Send Broadcast* dabao.",
+            keyboard, "Markdown"
+        )
+        return "OK"
 
     # =====================================================
-    # /HELP
+    # COMMANDS
     # =====================================================
 
-    if command == "/help":
+    if text == "/start":
 
-        try:
+        send_start(chat_id)
+        return "OK"
 
-            send_help(
-                chat_id
-            )
+    if text == "/help":
 
-        except Exception as error:
+        send_help(chat_id)
+        return "OK"
 
-            print(
-                "HELP ERROR:",
-                repr(error),
-            )
+    if text == "/about":
 
-        return "OK", 200
+        send_about(chat_id)
+        return "OK"
 
-    # =====================================================
-    # /ABOUT
-    # =====================================================
+    if text == "/stats":
 
-    if command == "/about":
+        total, mine = get_stats(
+            chat_id
+        )
 
-        try:
-
-            send_about(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "ABOUT ERROR:",
-                repr(error),
-            )
-
-        return "OK", 200
-
-    # =====================================================
-    # /PING
-    # =====================================================
-
-    if command == "/ping":
-
-        try:
-
-            send_ping(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "PING ERROR:",
-                repr(error),
-            )
-
-        return "OK", 200
-
-    # =====================================================
-    # /STATS
-    # =====================================================
-
-    if command == "/stats":
-
-        try:
-
-            send_stats(
-                chat_id
-            )
-
-        except Exception as error:
-
-            print(
-                "STATS ERROR:",
-                repr(error),
-            )
-
-        return "OK", 200
-
-    # =====================================================
-    # /DOWNLOAD
-    # =====================================================
-
-    if command == "/download":
-
-        try:
+        if str(chat_id) == str(OWNER_CHAT_ID):
 
             send_message(
                 chat_id,
-
-                "📥 <b>Send me a public "
-                "Instagram link.</b>",
-
+                "📊 *Bot Stats (Owner view)*\n\n"
+                f"🌍 Total downloads (all users): {total}\n"
+                f"👤 Your downloads: {mine}",
                 None,
+                "Markdown"
             )
 
-        except Exception as error:
+        else:
 
-            print(
-                "DOWNLOAD COMMAND ERROR:",
-                repr(error),
+            send_message(
+                chat_id,
+                "📊 *Your Stats*\n\n"
+                f"👤 Your downloads: {mine}",
+                None,
+                "Markdown"
             )
 
-        return "OK", 200
+        return "OK"
 
-    # =====================================================
-    # INSTAGRAM URL
-    # =====================================================
-
-    if is_instagram_url(text):
-
-        print(
-            "INSTAGRAM URL DETECTED:",
-            text,
-        )
-
-        # -------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT use:
-        #
-        # threading.Thread(...).start()
-        #
-        # here.
-        #
-        # Vercel can terminate the invocation after the
-        # response is returned, killing the background work.
-        #
-        # We process it directly.
-        # -------------------------------------------------
-
-        process_download(
+    if text.split()[0].split("@")[0].lower() == "/broadcast" if text else False:
+        if str(chat_id) != str(OWNER_CHAT_ID):
+            send_message(chat_id, "⛔ *Owner only.*", None, "Markdown")
+            return "OK"
+        PENDING_BROADCAST.add(str(chat_id))
+        send_message(
             chat_id,
-            text,
+            "📢 *Broadcast mode ON*\n\n"
+            "Ab jo *next message* bhejoge, usko broadcast ke liye ready karunga.\n\n"
+            "Normal messages automatically broadcast nahi honge.",
+            None, "Markdown"
         )
+        return "OK"
 
-        return "OK", 200
-
-    # =====================================================
-    # UNKNOWN TEXT
-    # =====================================================
-
-    try:
+    if text == "/download":
 
         send_message(
             chat_id,
-
-            "📥 Send a public Instagram link "
-            "to start downloading.",
-
-            main_keyboard(),
+            "📥 *Ready!*\n\n"
+            "Send your public Instagram "
+            "Reel, Video, Photo or Carousel link. 🚀",
+            None,
+            "Markdown"
         )
+
+        return "OK"
+
+    # =====================================================
+    # URL VALIDATION
+    # =====================================================
+
+    if not is_instagram_url(text):
+
+        send_message(
+            chat_id,
+            "🤔 Hmm... mujhe ye samajh nahi aaya.\n\n"
+            "🔗 Instagram link bhejo, "
+            "ya /help use karo. 😎"
+        )
+
+        return "OK"
+
+    # =====================================================
+    # BUSY CHECK
+    # =====================================================
+
+    if not download_semaphore.acquire(
+        blocking=False
+    ):
+
+        send_message(
+            chat_id,
+            "⏳ *Thoda busy hoon abhi!*\n\n"
+            "Ek aur download chal raha hai. "
+            "Please 20-30 second baad try karo. 🙏",
+            None,
+            "Markdown"
+        )
+
+        return "OK"
+
+    try:
+
+        _handle_download(
+            chat_id,
+            text
+        )
+
+    finally:
+
+        download_semaphore.release()
+
+    return "OK"
+
+
+# =========================================================
+# DOWNLOAD HANDLER
+# =========================================================
+
+def _handle_download(chat_id, text):
+
+    loading_message_id = None
+    sending_message_id = None
+
+    ytdlp_dir = None
+    extractor_dir = None
+
+    try:
+
+        loading_message_id = send_message(
+            chat_id,
+            "🔗 *Link received!*\n\n"
+            "🔍 Checking the post...\n"
+            "⚙️ Preparing your media...\n\n"
+            "⏳ Hang tight, I'm on it 😎",
+            None,
+            "Markdown"
+        )
+
+        # =================================================
+        # PRIMARY: YT-DLP
+        # =================================================
+
+        wait_for_instagram_cooldown()
+
+        try:
+
+            ytdlp_dir, files = download_with_ytdlp(
+                text
+            )
+
+            print(
+                "yt-dlp succeeded:",
+                files
+            )
+
+        except Exception as ytdlp_error:
+
+            print(
+                "yt-dlp failed:",
+                repr(ytdlp_error)
+            )
+
+            send_message(
+                chat_id,
+                "🔄 Trying alternate "
+                "Instagram media extractor..."
+            )
+
+            # =============================================
+            # FALLBACK: EXTRACTOR
+            # =============================================
+
+            wait_for_instagram_cooldown()
+
+            extractor_dir, files = extract_instagram_media(
+                text
+            )
+
+        # =================================================
+        # DELETE LOADING
+        # =================================================
+
+        delete_message(
+            chat_id,
+            loading_message_id
+        )
+
+        loading_message_id = None
+
+        # =================================================
+        # SEND MEDIA
+        # =================================================
+
+        sending_message_id = send_message(
+            chat_id,
+            "📤 *Sending your media...*",
+            None,
+            "Markdown"
+        )
+
+        sent = 0
+
+        for filepath in files:
+
+            try:
+
+                send_media(
+                    chat_id,
+                    filepath
+                )
+
+                sent += 1
+
+            except Exception as send_error:
+
+                print(
+                    "TELEGRAM SEND ERROR:",
+                    repr(send_error)
+                )
+
+        delete_message(
+            chat_id,
+            sending_message_id
+        )
+
+        sending_message_id = None
+
+        if sent == 0:
+
+            raise Exception(
+                "No media could be sent to Telegram."
+            )
+
+        # =================================================
+        # SUCCESS
+        # =================================================
+
+        send_message(
+            chat_id,
+            f"🎉 *Done!*\n\n"
+            f"📦 {sent} media file(s) delivered.\n"
+            f"❤️ Enjoy!",
+            None,
+            "Markdown"
+        )
+
+        record_download(
+            chat_id
+        )
+
+    # =====================================================
+    # TIMEOUT
+    # =====================================================
+
+    except subprocess.TimeoutExpired:
+
+        delete_message(
+            chat_id,
+            loading_message_id
+        )
+
+        delete_message(
+            chat_id,
+            sending_message_id
+        )
+
+        send_message(
+            chat_id,
+            "⏱️ *Download timed out.*\n\n"
+            "Try a smaller public Instagram post. 😅",
+            None,
+            "Markdown"
+        )
+
+    # =====================================================
+    # ALL OTHER ERRORS
+    # =====================================================
 
     except Exception as error:
 
+        error_text = str(error)
+
         print(
-            "UNKNOWN TEXT ERROR:",
-            repr(error),
+            "DOWNLOAD ERROR:",
+            repr(error_text)
         )
 
-    return "OK", 200
+        delete_message(
+            chat_id,
+            loading_message_id
+        )
 
+        delete_message(
+            chat_id,
+            sending_message_id
+        )
 
-# =========================================================
-# STARTUP
-# =========================================================
+        # RuntimeError comes from extractor.py
+        # and contains a user-safe explanation.
 
-try:
+        if isinstance(
+            error,
+            RuntimeError
+        ):
 
-    setup_commands()
+            send_message(
+                chat_id,
+                f"😬 *{error_text}*",
+                None,
+                "Markdown"
+            )
 
-except Exception as error:
+        else:
 
-    print(
-        "STARTUP COMMAND ERROR:",
-        repr(error),
+            send_message(
+                chat_id,
+                "😬 *Instagram ne thoda nakhra "
+                "dikha diya.*\n\n"
+                "🔄 Please try again in a moment.",
+                None,
+                "Markdown"
+            )
+
+    # =====================================================
+    # CLEANUP
+    # =====================================================
+
+    finally:
+
+        if ytdlp_dir:
+
+            shutil.rmtree(
+                ytdlp_dir,
+                ignore_errors=True
+            )
+
+        if extractor_dir:
+
+            cleanup_media(
+                extractor_dir
     )
-
-
-# =========================================================
-# LOCAL SERVER
-# =========================================================
-
-if __name__ == "__main__":
-
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-    )
+        
