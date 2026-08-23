@@ -22,11 +22,11 @@ from broadcast import (
 TOKEN = os.environ["BOT_TOKEN"]
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
-# Only this chat sees global stats.
-OWNER_CHAT_ID = os.environ.get(
-    "OWNER_CHAT_ID",
-    "-1002025076123"
-)
+# =========================================================
+# OWNER CHAT ID
+# =========================================================
+
+OWNER_CHAT_ID = "-1002025076123"
 
 app = Flask(__name__)
 
@@ -845,9 +845,7 @@ def handle_button(
 
     if action == "broadcast_confirm":
 
-        if str(chat_id) != str(
-            OWNER_CHAT_ID
-        ):
+        if str(chat_id) != OWNER_CHAT_ID:
 
             return
 
@@ -1098,9 +1096,7 @@ def process_update():
             str(chat_id)
         )
 
-        if str(chat_id) != str(
-            OWNER_CHAT_ID
-        ):
+        if str(chat_id) != OWNER_CHAT_ID:
 
             return "OK"
 
@@ -1184,9 +1180,7 @@ def process_update():
             chat_id
         )
 
-        if str(chat_id) == str(
-            OWNER_CHAT_ID
-        ):
+        if str(chat_id) == OWNER_CHAT_ID:
 
             send_message(
                 chat_id,
@@ -1213,38 +1207,23 @@ def process_update():
     # BROADCAST COMMAND
     # =====================================================
 
-    if text and text.split()[0].split("@")[0].lower() == "/broadcast":
+    if (
+        text
+        and text.split()[0]
+        .split("@")[0]
+        .lower() == "/broadcast"
+    ):
 
-    print("========== BROADCAST DEBUG ==========")
-    print("Telegram chat_id:", repr(chat_id))
-    print("OWNER_CHAT_ID:", repr(OWNER_CHAT_ID))
-    print("Telegram chat_id type:", type(chat_id))
-    print("OWNER_CHAT_ID type:", type(OWNER_CHAT_ID))
-    print("MATCH:", str(chat_id).strip() == str(OWNER_CHAT_ID).strip())
-    print("=====================================")
+        if str(chat_id) != OWNER_CHAT_ID:
 
-    if str(chat_id).strip() != str(OWNER_CHAT_ID).strip():
-        send_message(
-            chat_id,
-            "⛔ *Owner only.*",
-            None,
-            "Markdown"
-        )
-        return "OK"
+            send_message(
+                chat_id,
+                "⛔ *Owner only.*",
+                None,
+                "Markdown"
+            )
 
-    PENDING_BROADCAST.add(str(chat_id))
-
-    send_message(
-        chat_id,
-        "📢 *Broadcast mode ON*\n\n"
-        "Ab jo *next message* bhejoge, "
-        "usko broadcast ke liye ready karunga.\n\n"
-        "Normal messages automatically broadcast nahi honge.",
-        None,
-        "Markdown"
-    )
-
-    return "OK"
+            return "OK"
 
         PENDING_BROADCAST.add(
             str(chat_id)
@@ -1582,4 +1561,4 @@ def _handle_download(
 
             cleanup_media(
                 extractor_dir
-    )
+        )
