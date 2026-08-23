@@ -1213,25 +1213,38 @@ def process_update():
     # BROADCAST COMMAND
     # =====================================================
 
-    if (
-        text
-        and text.split()[0]
-        .split("@")[0]
-        .lower() == "/broadcast"
-    ):
+    if text and text.split()[0].split("@")[0].lower() == "/broadcast":
 
-        if str(chat_id) != str(
-            OWNER_CHAT_ID
-        ):
+    print("========== BROADCAST DEBUG ==========")
+    print("Telegram chat_id:", repr(chat_id))
+    print("OWNER_CHAT_ID:", repr(OWNER_CHAT_ID))
+    print("Telegram chat_id type:", type(chat_id))
+    print("OWNER_CHAT_ID type:", type(OWNER_CHAT_ID))
+    print("MATCH:", str(chat_id).strip() == str(OWNER_CHAT_ID).strip())
+    print("=====================================")
 
-            send_message(
-                chat_id,
-                "⛔ *Owner only.*",
-                None,
-                "Markdown"
-            )
+    if str(chat_id).strip() != str(OWNER_CHAT_ID).strip():
+        send_message(
+            chat_id,
+            "⛔ *Owner only.*",
+            None,
+            "Markdown"
+        )
+        return "OK"
 
-            return "OK"
+    PENDING_BROADCAST.add(str(chat_id))
+
+    send_message(
+        chat_id,
+        "📢 *Broadcast mode ON*\n\n"
+        "Ab jo *next message* bhejoge, "
+        "usko broadcast ke liye ready karunga.\n\n"
+        "Normal messages automatically broadcast nahi honge.",
+        None,
+        "Markdown"
+    )
+
+    return "OK"
 
         PENDING_BROADCAST.add(
             str(chat_id)
