@@ -7,8 +7,8 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-def extract_info(url):
-    # Method 1: yt-dlp try karo
+def download_insta(url):
+    # Method 1: yt-dlp
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -24,24 +24,17 @@ def extract_info(url):
     except Exception as e:
         print(f"[yt-dlp fail] {e}")
 
-    # Method 2: Direct scraping fallback (ye ab kaam karega)
-    print("[Fallback] Trying direct scrape...")
+    # Method 2: Fallback direct scrape
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         html = r.text
-
-        # video_url nikalna
         match = re.search(r'"video_url":"([^"]+)"', html)
         if match:
             video_url = match.group(1).replace('\\u0026', '&').encode().decode('unicode_escape')
-
-            # title / user nikalna
             user_match = re.search(r'"owner":\{"username":"([^"]+)"', html)
-            caption_match = re.search(r'"caption":\{"text":"([^"]+)"', html)
-
             return {
                 'url': video_url,
-                'title': caption_match.group(1)[:100] if caption_match else "Instagram Reel",
+                'title': "Instagram Reel",
                 'uploader': user_match.group(1) if user_match else "Instagram",
                 'ext': 'mp4',
                 'formats': [{'url': video_url, 'ext': 'mp4'}]
@@ -50,3 +43,7 @@ def extract_info(url):
         print(f"[Fallback fail] {e}")
 
     raise Exception("No video formats found")
+
+# purane naam ke liye alias taaki fir error na aaye
+extract_info = download_insta
+download_instagram = download_insta
