@@ -3,47 +3,67 @@ import requests
 import re
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
+def clean_url(u):
+    return u.replace('\\u0026', '&').encode().decode('unicode_escape')
+
+# 1. VIDEO KE LIYE - yt-dlp (tera wala idea)
 def download_insta(url):
-    # Method 1: yt-dlp
     ydl_opts = {
         'quiet': True,
-        'no_warnings': True,
         'skip_download': True,
-        'nocheckcertificate': True,
         'http_headers': HEADERS,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            if info and (info.get('url') or info.get('formats')):
+            if info.get('url') or info.get('formats'):
+                info['type'] = 'video'
                 return info
-    except Exception as e:
-        print(f"[yt-dlp fail] {e}")
+    except:
+        pass
 
-    # Method 2: Fallback direct scrape
+    # Fallback video scrape
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        html = r.text
-        match = re.search(r'"video_url":"([^"]+)"', html)
-        if match:
-            video_url = match.group(1).replace('\\u0026', '&').encode().decode('unicode_escape')
-            user_match = re.search(r'"owner":\{"username":"([^"]+)"', html)
+        html = requests.get(url, headers=HEADERS, timeout=15).text
+        m = re.search(r'"video_url":"([^"]+)"', html)
+        if m:
             return {
-                'url': video_url,
-                'title': "Instagram Reel",
-                'uploader': user_match.group(1) if user_match else "Instagram",
+                'type': 'video',
+                'url': clean_url(m.group(1)),
+                'title': 'Instagram Reel',
+                'uploader': 'Instagram',
                 'ext': 'mp4',
-                'formats': [{'url': video_url, 'ext': 'mp4'}]
+                'formats': [{'url': clean_url(m.group(1))}]
             }
-    except Exception as e:
-        print(f"[Fallback fail] {e}")
+    except:
+        pass
 
-    raise Exception("No video formats found")
+    # Agar video nahi mila to photo try karo
+    return download_insta_photo(url)
 
-# purane naam ke liye alias taaki fir error na aaye
+# 2. PHOTO KE LIYE - Naya function
+def download_insta_photo(url):
+    html = requests.get(url, headers=HEADERS, timeout=15).text
+
+    # saare display_url nikal lo (carousel me 10 tak hote hai)
+    raw_images = re.findall(r'"display_url":"([^"]+)"', html)
+    # duplicate hatao
+    images = []
+    for u in raw_images:
+        cu = clean_url(u)
+        if cu not in images:
+            images.append(cu)
+
+    if not images:
+        raise Exception("No photo/video found")
+
+    if len(images) == 1:
+        return {'type': 'photo', 'images': images}
+    else:
+        return {'type': 'carousel', 'images': images[:10]} # insta max 10
+
+# alias
 extract_info = download_insta
-download_instagram = download_insta
