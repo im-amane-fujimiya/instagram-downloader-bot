@@ -1,5 +1,8 @@
 {
   "functions": {
-    "main.py": {"maxDuration": 30}
-  }
+    "api/index.py": { "maxDuration": 30 }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index.py" }
+  ]
 }
