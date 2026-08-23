@@ -25,7 +25,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 # Only this chat sees global stats.
 OWNER_CHAT_ID = os.environ.get(
     "OWNER_CHAT_ID",
-    "-1002562168076"
+    "-1002025076123"
 )
 
 app = Flask(__name__)
