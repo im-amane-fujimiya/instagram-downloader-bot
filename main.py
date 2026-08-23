@@ -3,102 +3,142 @@ import os, requests, re
 
 app = Flask(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = os.getenv("OWNER_ID") or os.getenv("ADMIN_ID")
+OWNER_ID = os.getenv("OWNER_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID") or "@Material_01_01"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 START_PHOTO = "https://files.catbox.moe/3f7j4v.jpg"
 
-START_TEXT = """🎬 <b>Instagram Downloader Bot</b>
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-🎞 Reels
-🎥 Videos
-🖼 Photos
-📚 Carousels
+# ========== ALAG ALAG FUNCTIONS ==========
 
-⚡️ Simple
-🎯 Easy to use
-🤖 Automated
-Built to make saving public Instagram media a little less annoying 😎"""
+def func_get_caption(html):
+    try:
+        m = re.search(r'"caption":\{"text":"([^"]+)"', html)
+        if m: return m.group(1).encode().decode('unicode_escape')[:800]
+        m2 = re.search(r'"edge_media_to_caption":\{"edges":\[{"node":\{"text":"([^"]+)"', html)
+        if m2: return m2.group(1).encode().decode('unicode_escape')[:800]
+    except: pass
+    return ""
 
-def sb_add_user(chat_id, username="", first_name=""):
+def func_get_username(html):
+    try:
+        m = re.search(r'"owner":\{"username":"([^"]+)"', html)
+        if m: return m.group(1)
+    except: pass
+    return "Instagram"
+
+def func_get_photos(html):
+    try:
+        raw = re.findall(r'"display_url":"([^"]+)"', html)
+        clean = []
+        for u in raw:
+            cu = u.replace('\\u0026','&').encode().decode('unicode_escape')
+            if 's150x150' not in cu and cu not in clean:
+                clean.append(cu)
+        return clean[:10]
+    except: return []
+
+def func_get_video_link(url):
+    # Sirf video ke liye yt-dlp - photo/caption ke liye nahi
+    try:
+        import yt_dlp
+        opts = {'quiet': True, 'skip_download': True, 'no_warnings': True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            vurl = info.get('url') or (info.get('formats')[-1]['url'] if info.get('formats') else None)
+            return vurl, info.get('description','')[:500], info.get('uploader','Insta')
+    except: return None, "", ""
+
+def func_get_profile_dp(username):
+    try:
+        html = requests.get(f"https://www.instagram.com/{username}/", headers=HEADERS, timeout=10).text
+        m = re.search(r'"profile_pic_url_hd":"([^"]+)"', html)
+        if m: return m.group(1).replace('\\u0026','&')
+    except: pass
+    return None
+
+def sb_add_user(chat_id, username=""):
     if not SUPABASE_URL or not SUPABASE_KEY: return
     try:
         h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
-        requests.post(f"{SUPABASE_URL}/rest/v1/users", headers={**h, "Prefer": "resolution=merge-duplicates"}, json={"chat_id": chat_id, "username": username, "first_name": first_name}, timeout=5)
+        requests.post(f"{SUPABASE_URL}/rest/v1/users", headers={**h, "Prefer": "resolution=merge-duplicates"}, json={"chat_id": chat_id, "username": username}, timeout=4)
     except: pass
 
-def send_msg(chat_id, text, kb=None):
-    try:
-        d = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        if kb: d["reply_markup"] = kb
-        requests.post(f"{TELEGRAM_API}/sendMessage", json=d, timeout=10)
-    except: pass
+# ========== BOT ==========
 
 @app.route("/", methods=["GET"])
-def home():
-    try:
-        cmds = [{"command": "start", "description": "🚀 Bot intro"}, {"command": "id", "description": "🆔 ID"}, {"command": "ping", "description": "🏓 Ping"}, {"command": "help", "description": "❓ Help"}]
-        requests.post(f"{TELEGRAM_API}/setMyCommands", json={"commands": cmds}, timeout=5)
-    except: pass
-    return "MONSTER V2 RUNNING 🔥"
+def home(): return "MONSTER V3 - SEPARATE FUNCTIONS 🔥"
 
 @app.route("/", methods=["POST"])
 def webhook():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
         if not data or "message" not in data: return "ok",200
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text","")
-        first = data["message"]["from"].get("first_name","")
         username = data["message"]["from"].get("username","")
-        is_owner = OWNER_ID and str(chat_id) == str(OWNER_ID)
+        sb_add_user(chat_id, username)
 
-        sb_add_user(chat_id, username, first)
-
+        # Commands
         if text.startswith("/start"):
-            kb = {"inline_keyboard": [[{"text": "📥 Download", "callback_data": "dl"}, {"text": "❓ Help", "callback_data": "help"}], [{"text": f"📢 {CHANNEL_ID}", "url": f"https://t.me/{CHANNEL_ID.replace('@','')}"}]]}
-            msg = f"👑 Welcome Owner!\n\n{START_TEXT}" if is_owner else f"{START_TEXT}\n\n🔥 Bhej de reel!\nChannel: {CHANNEL_ID}"
+            kb = {"inline_keyboard": [[{"text": "📥 Download", "callback_data": "dl"}], [{"text": f"📢 {CHANNEL_ID}", "url": f"https://t.me/{CHANNEL_ID.replace('@','')}"}]]}
             try:
-                requests.post(f"{TELEGRAM_API}/sendPhoto", json={"chat_id": chat_id, "photo": START_PHOTO, "caption": msg, "parse_mode": "HTML", "reply_markup": kb}, timeout=15)
+                requests.post(f"{TELEGRAM_API}/sendPhoto", json={"chat_id": chat_id, "photo": START_PHOTO, "caption": "🎬 <b>Instagram Downloader Bot</b>\n\n🎞 Reels 🎥 Videos 🖼 Photos\n\n⚡️ Har cheez alag function se!\n\n🔥 Link bhej!", "parse_mode": "HTML", "reply_markup": kb}, timeout=10)
             except:
-                send_msg(chat_id, msg, kb)
+                requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "🎬 Bot ON! Link bhej!", "reply_markup": kb}, timeout=10)
             return "ok",200
 
-        if text.startswith("/id"): send_msg(chat_id, f"🆔 <code>{chat_id}</code>"); return "ok",200
-        if text.startswith("/ping"): send_msg(chat_id, "🏓 Monster ON hai! 500 Gone 🔥"); return "ok",200
-        if text.startswith("/help"): send_msg(chat_id, f"Link bhej de bas! Channel: {CHANNEL_ID}"); return "ok",200
+        if text.startswith("/id"):
+            requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": f"🆔 <code>{chat_id}</code>", "parse_mode": "HTML"}, timeout=5)
+            return "ok",200
 
+        if text.startswith("/profile"):
+            uname = text.replace("/profile","").strip().replace("@","")
+            if not uname:
+                requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "Use: /profile username"}, timeout=5)
+                return "ok",200
+            dp = func_get_profile_dp(uname)
+            if dp: requests.post(f"{TELEGRAM_API}/sendPhoto", json={"chat_id": chat_id, "photo": dp, "caption": f"👤 @{uname} HD DP"}, timeout=10)
+            else: requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "❌ DP nahi mila"}, timeout=5)
+            return "ok",200
+
+        # Main downloader - ALAG ALAG
         links = re.findall(r'https?://(?:www\.)?instagram\.com/[^\s]+', text)
         if not links: return "ok",200
 
-        loading = None
-        try:
-            r = requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": "⏳ Fetching... 🤖"}, timeout=10).json()
-            loading = r.get("result",{}).get("message_id")
-        except: pass
-
-        for url in links[:3]:
+        for url in links[:2]:
             try:
-                import yt_dlp
-                ydl_opts = {'quiet': True, 'skip_download': True, 'no_warnings': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    vurl = info.get('url') or (info.get('formats') or [{}])[-1].get('url')
-                    cap = info.get('description','')[:500] or f"👤 {info.get('uploader','Insta')}"
-                    if vurl:
-                        requests.post(f"{TELEGRAM_API}/sendVideo", json={"chat_id": chat_id, "video": vurl, "caption": cap}, timeout=20)
-                        try: requests.post(f"{TELEGRAM_API}/sendVideo", json={"chat_id": CHANNEL_ID, "video": vurl, "caption": cap[:200]}, timeout=10)
-                        except: pass
+                # Step 1: HTML lao (photo + caption ke liye) - yt-dlp nahi
+                html = requests.get(url, headers=HEADERS, timeout=10).text
+                caption = func_get_caption(html)
+                uname = func_get_username(html)
+                photos = func_get_photos(html)
+
+                # Photo hai to photo bhejo
+                if photos and "reel" not in url and "/p/" in url:
+                    for i, p in enumerate(photos[:5]):
+                        cap = f"👤 @{uname}\n\n{caption}" if i==0 else ""
+                        requests.post(f"{TELEGRAM_API}/sendPhoto", json={"chat_id": chat_id, "photo": p, "caption": cap[:1024]}, timeout=15)
+                    continue
+
+                # Video/Reel hai to alag function
+                vurl, vdesc, vuploader = func_get_video_link(url)
+                if vurl:
+                    final_cap = caption or vdesc
+                    cap = f"👤 @{vuploader or uname}\n\n{final_cap}"[:1024]
+                    requests.post(f"{TELEGRAM_API}/sendVideo", json={"chat_id": chat_id, "video": vurl, "caption": cap}, timeout=20)
+                    # Channel auto-post
+                    try: requests.post(f"{TELEGRAM_API}/sendVideo", json={"chat_id": CHANNEL_ID, "video": vurl, "caption": cap[:300]}, timeout=10)
+                    except: pass
+                else:
+                    # Fallback photo
+                    if photos:
+                        requests.post(f"{TELEGRAM_API}/sendPhoto", json={"chat_id": chat_id, "photo": photos[0], "caption": f"👤 @{uname}\n\n{caption}"[:1024]}, timeout=10)
             except Exception as e:
-                print(e)
-                send_msg(chat_id, f"❌ Download fail, link check kar: {url[:40]}")
-            
-            if loading:
-                try: requests.post(f"{TELEGRAM_API}/deleteMessage", json={"chat_id": chat_id, "message_id": loading}, timeout=5)
-                except: pass
-                loading = None
+                print("DL ERR", e)
 
     except Exception as e:
         print("MAIN ERR", e)
