@@ -98,11 +98,8 @@ def _run_ytdlp(
     """
     Always run yt-dlp through Python.
 
-    This fixes Render errors like:
-
-        FileNotFoundError: No such file or directory
-
-    caused by calling the `yt-dlp` executable directly.
+    This fixes errors caused by calling the
+    yt-dlp executable directly.
     """
 
     full_command = [
@@ -220,7 +217,6 @@ def _get_parth_info(url):
 # ============================================================
 
 def get_instagram_metadata(url):
-
     """
     Metadata priority:
 
@@ -385,7 +381,6 @@ def _extension_from_url(
     url,
     content_type="",
 ):
-
     """
     Instagram sometimes gives a .heic URL while
     actually serving JPEG because of:
@@ -420,6 +415,7 @@ def _extension_from_url(
     )
 
     if match:
+
         ext = match.group(1)
 
         if ext == "jpeg":
@@ -684,7 +680,7 @@ def _download_with_parth(
                 if "mp4" in media_url.lower():
                     ext = ".mp4"
 
-                elif not ext in (
+                elif ext not in (
                     ".mp4",
                     ".mov",
                     ".webm",
@@ -714,12 +710,14 @@ def _download_with_parth(
             )
 
             try:
+
                 if os.path.exists(
                     temp_path
                 ):
                     os.remove(
                         temp_path
                     )
+
             except Exception:
                 pass
 
@@ -854,7 +852,6 @@ def _download_with_ytdlp(
 # ============================================================
 
 def download_instagram_media(url):
-
     """
     Final downloader architecture:
 
@@ -1053,4 +1050,22 @@ def cleanup_media(
         shutil.rmtree(
             temp_dir,
             ignore_errors=True,
-    )
+        )
+
+
+# ============================================================
+# BACKWARD COMPATIBILITY
+# ============================================================
+#
+# main.py currently imports:
+#
+#     extract_instagram_media
+#
+# The actual downloader function is:
+#
+#     download_instagram_media
+#
+# Keep this alias so both names work.
+# ============================================================
+
+extract_instagram_media = download_instagram_media
