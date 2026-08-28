@@ -1,19 +1,20 @@
 from flask import Flask, request
-import os, requests
+import os, requests, re
 import yt_dlp
+import instaloader
 
 app = Flask(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 S_URL = os.getenv("SUPABASE_URL")
 S_KEY = os.getenv("SUPABASE_KEY")
 PHOTO = "https://files.catbox.moe/3f7j4v.jpg"
+L = instaloader.Instaloader()
 
 def save_user(cid, uname, fname):
     try:
-        if not S_URL or not S_KEY: return
         url = f"{S_URL}/rest/v1/users"
-        headers = {"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
-        requests.post(url, json={"chat_id": cid, "username": uname, "first_name": fname}, headers=headers, timeout=10)
+        h = {"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
+        requests.post(url, json={"chat_id": cid, "username": uname, "first_name": fname}, headers=h, timeout=10)
     except: pass
 
 @app.route('/', methods=['GET','POST'])
@@ -21,69 +22,71 @@ def save_user(cid, uname, fname):
 @app.route('/api/index', methods=['GET','POST'])
 def bot():
     if request.method == "GET":
-        return "MONSTER V6 PHOTO+VIDEO FIXED 🔥", 200
+        return "MONSTER V8 FINAL 🔥", 200
     try:
         data = request.get_json(force=True, silent=True)
-        if not data or "message" not in data: return "ok", 200
-
+        if not data or "message" not in data: return "ok",200
         msg = data["message"]
         chat_id = msg["chat"]["id"]
-        raw_text = msg.get("text","").strip()
-        text_low = raw_text.lower()
-        user = msg.get("from", {})
+        raw = msg.get("text","").strip()
+        low = raw.lower()
         API = f"https://api.telegram.org/bot{TOKEN}"
+        user = msg.get("from",{})
 
-        # --- COMMANDS (100% FIXED) ---
-        if text_low.startswith("/start"):
+        # COMMANDS - FIXED
+        if low.startswith("/start"):
             save_user(chat_id, user.get("username",""), user.get("first_name",""))
-            requests.post(f"{API}/sendPhoto", json={"chat_id": chat_id, "photo": PHOTO, "caption": "🔥 <b>MONSTER V6 ON</b>\n\nReel / Photo / Carousel sab download!\n\n/start - Start\n/help - Help\n/stats - Stats", "parse_mode": "HTML"}, timeout=15)
-            return "ok", 200
+            requests.post(f"{API}/sendPhoto", json={"chat_id":chat_id, "photo":PHOTO, "caption":"🔥 BOT ON!\n/start - Start\n/help - Help\n/stats - Stats\n\nLink bhej!" , "parse_mode":"HTML"}, timeout=15)
+            return "ok",200
+        if low.startswith("/help"):
+            requests.post(f"{API}/sendMessage", json={"chat_id":chat_id, "text":"Help: Insta link bhej, Photo/Reel dono dunga!"}, timeout=15)
+            return "ok",200
+        if low.startswith("/stats"):
+            h={"apikey":S_KEY, "Authorization": f"Bearer {S_KEY}"}
+            r=requests.get(f"{S_URL}/rest/v1/users?select=chat_id", headers=h, timeout=10)
+            c=len(r.json()) if r.ok else 0
+            requests.post(f"{API}/sendMessage", json={"chat_id":chat_id, "text":f"👥 Users: {c}"}, timeout=15)
+            return "ok",200
 
-        if text_low.startswith("/help"):
-            requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": "📖 HELP\n\nInsta link bhej - Reel/Photo dono download kar dunga!\n\n/start - Start\n/help - Help\n/stats - Users"}, timeout=15)
-            return "ok", 200
-
-        if text_low.startswith("/stats"):
+        if "instagram.com" in low:
+            requests.post(f"{API}/sendMessage", json={"chat_id":chat_id, "text":"📥 Downloading..."}, timeout=10)
+            # TRY 1: yt-dlp for REEL/VIDEO
             try:
-                h = {"apikey": S_KEY, "Authorization": f"Bearer {S_KEY}"}
-                r = requests.get(f"{S_URL}/rest/v1/users?select=chat_id", headers=h, timeout=10)
-                count = len(r.json()) if r.ok else 0
-                requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": f"👥 Total Users: {count}"}, timeout=15)
-            except:
-                requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": "Stats error!"}, timeout=15)
-            return "ok", 200
-
-        # --- INSTA DOWNLOADER (PHOTO + VIDEO + CAROUSEL) ---
-        if "instagram.com" in text_low:
-            requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": "📥 Downloading..."}, timeout=10)
-            try:
-                ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(raw_text, download=False)
-
-                    # Carousel hai toh entries hogi
-                    entries = info.get('entries') or [info]
-
-                    for item in entries:
-                        url = item.get('url') or item.get('webpage_url')
-                        # Thumbnail / direct url check
-                        direct_url = item.get('url')
-                        ext = item.get('ext','')
-
-                        if not direct_url: continue
-
-                        # Photo hai?
-                        if ext in ['jpg','jpeg','png','webp'] or 'image' in item.get('format','').lower() or direct_url.endswith(('.jpg','.png','.webp')):
-                            requests.post(f"{API}/sendPhoto", json={"chat_id": chat_id, "photo": direct_url}, timeout=30)
-                        else:
-                            # Video / Reel
-                            requests.post(f"{API}/sendVideo", json={"chat_id": chat_id, "video": direct_url}, timeout=40)
-
-                return "ok", 200
+                with yt_dlp.YoutubeDL({'quiet':True, 'no_warnings':True, 'skip_download':True}) as ydl:
+                    info=ydl.extract_info(raw, download=False)
+                    urls = []
+                    if 'entries' in info:
+                        for e in info['entries']: urls.append(e.get('url'))
+                    else:
+                        urls.append(info.get('url'))
+                    for u in urls:
+                        if u:
+                            requests.post(f"{API}/sendVideo", json={"chat_id":chat_id, "video":u}, timeout=40)
+                    return "ok",200
             except Exception as e:
-                print(f"YTDLP Error: {e}")
-                requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": f"❌ Download fail! Private account ho sakta hai.\nError: {e}"}, timeout=10)
-
+                print(f"ytdlp fail: {e}")
+                # TRY 2: PHOTO via Instaloader
+                try:
+                    m=re.search(r'/(?:p|reel|reels)/([^/]+)/', raw)
+                    if not m: raise Exception("No shortcode")
+                    shortcode=m.group(1)
+                    post=instaloader.Post.from_shortcode(L.context, shortcode)
+                    if post.is_video:
+                        requests.post(f"{API}/sendVideo", json={"chat_id":chat_id, "video":post.video_url}, timeout=40)
+                    else:
+                        # photo or carousel
+                        if post.mediacount>1:
+                            for sidecar in post.get_sidecar_nodes():
+                                if sidecar.is_video:
+                                    requests.post(f"{API}/sendVideo", json={"chat_id":chat_id, "video":sidecar.video_url}, timeout=40)
+                                else:
+                                    requests.post(f"{API}/sendPhoto", json={"chat_id":chat_id, "photo":sidecar.display_url}, timeout=40)
+                        else:
+                            requests.post(f"{API}/sendPhoto", json={"chat_id":chat_id, "photo":post.url}, timeout=40)
+                    return "ok",200
+                except Exception as e2:
+                    print(f"insta fail: {e2}")
+                    requests.post(f"{API}/sendMessage", json={"chat_id":chat_id, "text":f"❌ Private post hai!\n{e2}"}, timeout=10)
     except Exception as e:
         print(e)
-    return "ok", 200
+    return "ok",200
